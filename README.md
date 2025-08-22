@@ -15,6 +15,7 @@ A professional JT808 protocol server implementation with ULV protocol support an
 ## 📋 Protocol Compliance
 
 ### JT808-2019 Standard
+
 - Terminal registration and authentication
 - Location reporting and querying
 - Multimedia data upload (0x0801)
@@ -22,12 +23,14 @@ A professional JT808 protocol server implementation with ULV protocol support an
 - File upload protocol
 
 ### ULV Protocol (Ultravision Technology)
+
 - Multimedia header structure (8 bytes)
 - Location information (28 bytes)
 - Media data handling
 - Streaming support
 
 ### JTT2019 Date Format
+
 - **Timestamp**: Seconds since 2000-01-01 00:00:00 UTC
 - **Format**: DWORD (4 bytes)
 - **Compliance**: Vendor specification requirement
@@ -47,10 +50,12 @@ src/
 ## 🚀 Quick Start
 
 ### Prerequisites
+
 - Node.js 18.x or higher
 - Git
 
 ### Installation
+
 ```bash
 # Clone repository
 git clone https://github.com/bamikalea/node-JTT808_ULV-cur.git
@@ -64,6 +69,7 @@ npm start
 ```
 
 ### Environment Variables
+
 ```bash
 # Server configuration
 PORT=3000                    # HTTP API port
@@ -75,22 +81,26 @@ LOG_LEVEL=info              # Logging level
 ## 📡 API Endpoints
 
 ### Health Check
+
 ```bash
 GET /health
 ```
 
 ### Server Status
+
 ```bash
 GET /status
 ```
 
 ### Terminal Information
+
 ```bash
 GET /api/terminals
 GET /api/terminals/:terminalId
 ```
 
 ### Multimedia Control
+
 ```bash
 POST /api/multimedia/trigger
 ```
@@ -98,11 +108,13 @@ POST /api/multimedia/trigger
 ## 🔧 Configuration
 
 ### Firewall Ports
+
 - **3000**: HTTP API
 - **8080**: JT808 protocol
 - **22**: SSH (for server management)
 
 ### JT808 Message Types
+
 - `0x0001`: Terminal registration
 - `0x0002`: Terminal heartbeat
 - `0x0100`: Terminal authentication
@@ -113,11 +125,13 @@ POST /api/multimedia/trigger
 ## 📊 Monitoring
 
 ### Logs
+
 - **Console**: Real-time server logs
 - **Files**: Structured logging to files
 - **Levels**: Error, Warn, Info, Debug
 
 ### Raw Data
+
 - **Multimedia**: All video/audio data logged
 - **Protocol**: JT808 message parsing
 - **Connections**: Terminal connection status
@@ -125,12 +139,14 @@ POST /api/multimedia/trigger
 ## 🚀 Deployment
 
 ### Vultr Cloud
+
 1. Create server with IPv4 support
 2. Configure firewall rules
 3. Deploy code and start services
 4. Monitor logs for raw video feeds
 
 ### Docker (Optional)
+
 ```bash
 docker build -t jt808-server .
 docker run -p 3000:3000 -p 8080:8080 jt808-server
@@ -139,11 +155,13 @@ docker run -p 3000:3000 -p 8080:8080 jt808-server
 ## 🔍 Testing
 
 ### Multimedia Test
+
 ```bash
 node test-multimedia-debug.js
 ```
 
 ### HTTP API Test
+
 ```bash
 curl http://localhost:3000/health
 curl http://localhost:3000/status
@@ -159,11 +177,13 @@ curl http://localhost:3000/status
 ## 🎯 Vendor Compliance
 
 ### Date Format Issue Resolved
+
 - **Previous**: Unix timestamp (seconds since 1970-01-01)
 - **Current**: JTT2019 timestamp (seconds since 2000-01-01)
 - **Compliance**: ✅ Vendor specification met
 
 ### Protocol Structure
+
 - **Multimedia Header**: 8 bytes (ULV compliant)
 - **Location Data**: 28 bytes (JTT2019 format)
 - **Message Structure**: JT808-2019 standard

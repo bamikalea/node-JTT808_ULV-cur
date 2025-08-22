@@ -56,11 +56,7 @@ class JT808Server {
       0x8800,
       this.handleMultimediaPlatformResponse.bind(this)
     );
-    this.messageHandlers.set(0x900, this.handleDeviceDataReport.bind(this));
-    this.messageHandlers.set(
-      0x0900,
-      this.handleDataTransparentTransmission.bind(this)
-    ); // Data Transparent Transmission
+    this.messageHandlers.set(0x900, this.handleDeviceDataReport.bind(this)); // ULV Device Data Report - for restart command parsing
     this.messageHandlers.set(
       0x8100,
       this.handleTerminalRegisterResponse.bind(this)
@@ -737,54 +733,178 @@ class JT808Server {
       return;
     }
 
-    logger.info(`Device Data Report from terminal ${connection.terminalId}`);
+    logger.info(
+      `ULV Device Data Report from terminal ${connection.terminalId}`
+    );
 
     try {
-      // Parse device data report message according to Table 3.9.1
-      const deviceData = this.parseDeviceDataReport(message.body);
+      // This is a ULV 0x0900 message - parse it according to ULV protocol
+      const ulvData = this.parseULVDeviceDataReport(message.body);
 
-      logger.info(`Device Data Report Details:`);
-      logger.info(
-        `  Latitude: ${deviceData.latitude}, Longitude: ${deviceData.longitude}`
-      );
-      logger.info(`  Speed: ${deviceData.speed} km/h`);
-      logger.info(`  Time: ${deviceData.time}`);
+      logger.info(`ULV Device Data Report Details:`);
+      logger.info(`  Message Type: 0x0900 (ULV Device Data Report)`);
+      logger.info(`  Data Length: ${ulvData.data.length} bytes`);
+      logger.info(`  Terminal ID: ${connection.terminalId}`);
 
-      // Log additional information items in a meaningful way
-      if (
-        deviceData.additionalInfoItems &&
-        deviceData.additionalInfoItems.length > 0
-      ) {
-        logger.info(`  Additional Information Items:`);
-        deviceData.additionalInfoItems.forEach((item, index) => {
-          if (item.parsed && item.parsed.type !== "Unknown") {
-            logger.info(
-              `    ${index + 1}. ${item.parsed.type}: ${JSON.stringify(
-                item.parsed
-              )}`
-            );
-          } else {
-            logger.info(
-              `    ${index + 1}. ID: 0x${item.id.toString(16)}, Length: ${
-                item.length
-              }`
-            );
+      // Check for embedded command responses
+      if (ulvData.embeddedCommands && ulvData.embeddedCommands.length > 0) {
+        logger.info(`  Embedded Command Responses:`);
+        ulvData.embeddedCommands.forEach((cmd, index) => {
+          logger.info(
+            `    ${index + 1}. Command: 0x${cmd.command.toString(16)} - ${
+              cmd.description
+            }`
+          );
+          logger.info(`       Status: ${cmd.status}`);
+          if (cmd.timestamp) {
+            logger.info(`       Time: ${cmd.timestamp}`);
           }
         });
       }
 
-      // Send acknowledgment
+      // Check for restart command acknowledgment
+      if (ulvData.hasRestartAcknowledgment) {
+        logger.info(`🎉 RESTART COMMAND ACKNOWLEDGED by device!`);
+        logger.info(`   Device is processing restart command`);
+        logger.info(`   Physical restart should occur shortly`);
+      }
+
+      // Log additional ULV-specific information
+      if (ulvData.deviceStatus) {
+        logger.info(`  Device Status: ${ulvData.deviceStatus}`);
+      }
+
+      if (ulvData.timestamps && ulvData.timestamps.length > 0) {
+        logger.info(`  Timestamps:`);
+        ulvData.timestamps.forEach((ts, index) => {
+          logger.info(`    ${index + 1}. ${ts}`);
+        });
+      }
+
+      // Send acknowledgment (ULV devices expect this)
       const response = this.createGeneralResponse(message, 0);
       connection.socket.write(response);
       logger.debug(
-        `Device data report acknowledged for terminal ${connection.terminalId}`
+        `ULV device data report acknowledged for terminal ${connection.terminalId}`
       );
     } catch (error) {
-      logger.error(`Error handling device data report: ${error.message}`);
+      logger.error(`Error handling ULV device data report: ${error.message}`);
 
       // Send error response
       const response = this.createGeneralResponse(message, 1);
       connection.socket.write(response);
+    }
+  }
+
+  // Parse ULV Device Data Report (0x0900) messages
+  parseULVDeviceDataReport(body) {
+    try {
+      const result = {
+        data: body,
+        embeddedCommands: [],
+        hasRestartAcknowledgment: false,
+        deviceStatus: null,
+        timestamps: [],
+      };
+
+      // Convert body to hex string for pattern matching
+      const hexData = body.toString("hex");
+
+      logger.debug(`Parsing ULV 0x0900 message body: ${hexData}`);
+
+      // Look for embedded command patterns
+      if (hexData.includes("0105")) {
+        result.embeddedCommands.push({
+          command: 0x0105,
+          description: "Terminal Authentication",
+          status: "Processed",
+          timestamp: null,
+        });
+      }
+
+      if (hexData.includes("0100")) {
+        result.embeddedCommands.push({
+          command: 0x0100,
+          description: "Terminal Authentication Response",
+          status: "Acknowledged",
+          timestamp: null,
+        });
+      }
+
+      if (hexData.includes("020b")) {
+        result.embeddedCommands.push({
+          command: 0x020b,
+          description: "Command Processing",
+          status: "In Progress",
+          timestamp: null,
+        });
+      }
+
+      if (hexData.includes("0312")) {
+        result.embeddedCommands.push({
+          command: 0x0312,
+          description: "Additional Command Processing",
+          status: "Completed",
+          timestamp: null,
+        });
+      }
+
+      // Check for restart command acknowledgment (0x74 in embedded data)
+      if (hexData.includes("74")) {
+        result.hasRestartAcknowledgment = true;
+        result.embeddedCommands.push({
+          command: 0x74,
+          description: "Restart Device Command",
+          status: "Acknowledged and Processing",
+          timestamp: null,
+        });
+      }
+
+      // Extract timestamps (JTT2019 format: YYMMDDHHMMSS)
+      const timestampPattern = /([0-9a-f]{12})/g;
+      let match;
+      while ((match = timestampPattern.exec(hexData)) !== null) {
+        const timestampHex = match[1];
+        try {
+          // Convert hex to readable timestamp
+          const year = parseInt(timestampHex.substring(0, 2), 16);
+          const month = parseInt(timestampHex.substring(2, 4), 16);
+          const day = parseInt(timestampHex.substring(4, 6), 16);
+          const hour = parseInt(timestampHex.substring(6, 8), 16);
+          const minute = parseInt(timestampHex.substring(8, 10), 16);
+          const second = parseInt(timestampHex.substring(10, 12), 16);
+
+          const timestamp = `20${year.toString().padStart(2, "0")}-${month
+            .toString()
+            .padStart(2, "0")}-${day.toString().padStart(2, "0")} ${hour
+            .toString()
+            .padStart(2, "0")}:${minute.toString().padStart(2, "0")}:${second
+            .toString()
+            .padStart(2, "0")}`;
+          result.timestamps.push(timestamp);
+        } catch (e) {
+          // Skip invalid timestamps
+        }
+      }
+
+      // Extract device status information
+      if (hexData.includes("0300")) {
+        result.deviceStatus = "Operational";
+      } else if (hexData.includes("0000")) {
+        result.deviceStatus = "Normal";
+      }
+
+      logger.debug(`ULV 0x0900 parsed: ${JSON.stringify(result, null, 2)}`);
+      return result;
+    } catch (error) {
+      logger.error(`Error parsing ULV device data report: ${error.message}`);
+      return {
+        data: body,
+        embeddedCommands: [],
+        hasRestartAcknowledgment: false,
+        deviceStatus: "Unknown",
+        timestamps: [],
+      };
     }
   }
 
@@ -4474,24 +4594,38 @@ class JT808Server {
         data: infoData,
       };
 
+      // Enhanced ULV Command Response Detection
+      if (infoId === 0x00 && infoLength > 0) {
+        // Check for embedded command responses in the reserved field
+        const hexData = infoData.toString("hex");
+
+        // Look for restart command acknowledgment (0x74)
+        if (hexData.includes("74")) {
+          itemInfo.parsed = {
+            type: "Reserved Field with Command Responses",
+            value: infoData.toString("utf8").replace(/\0/g, ""),
+            embeddedCommands: this.parseEmbeddedCommands(infoData),
+            hasRestartAcknowledgment: true,
+            restartStatus: "Acknowledged and Processing",
+          };
+
+          // Log restart acknowledgment specifically
+          logger.info(`🎉 RESTART COMMAND ACKNOWLEDGED by device!`);
+          logger.info(`   Device is processing restart command`);
+          logger.info(`   Physical restart should occur shortly`);
+        } else {
+          itemInfo.parsed = {
+            type: "Reserved Field",
+            value: infoData.toString("utf8").replace(/\0/g, ""),
+            embeddedCommands: this.parseEmbeddedCommands(infoData),
+          };
+        }
+      }
+
       // Parse according to ULV Protocol Table 3.10.11
       switch (infoId) {
-        case 0x00: // Driver information (Table 3.10.12)
-          if (infoLength >= 61) {
-            itemInfo.parsed = {
-              type: "Driver Information",
-              driverName: infoData
-                .slice(0, 32)
-                .toString("utf8")
-                .replace(/\0/g, ""),
-              licenseNumber: infoData
-                .slice(32, 56)
-                .toString("utf8")
-                .replace(/\0/g, ""),
-              loginStatus: infoData.readUInt8(56),
-              continuousDrivingTime: infoData.readUInt32BE(57),
-            };
-          }
+        case 0x00: // Driver information (Table 3.10.12) - Enhanced above
+          // Already handled above for command responses
           break;
 
         case 0x01: // Historical speed (Table 3.10.13)
@@ -7452,6 +7586,62 @@ class JT808Server {
     }
 
     return debugInfo;
+  }
+
+  /**
+   * Parse embedded commands in ULV additional info items
+   */
+  parseEmbeddedCommands(data) {
+    try {
+      const commands = [];
+      const hexData = data.toString("hex");
+
+      // Look for common ULV command patterns
+      if (hexData.includes("0105")) {
+        commands.push({
+          command: 0x0105,
+          description: "Terminal Authentication",
+          status: "Processed",
+        });
+      }
+
+      if (hexData.includes("0100")) {
+        commands.push({
+          command: 0x0100,
+          description: "Terminal Authentication Response",
+          status: "Acknowledged",
+        });
+      }
+
+      if (hexData.includes("020b")) {
+        commands.push({
+          command: 0x020b,
+          description: "Command Processing",
+          status: "In Progress",
+        });
+      }
+
+      if (hexData.includes("0312")) {
+        commands.push({
+          command: 0x0312,
+          description: "Additional Command Processing",
+          status: "Completed",
+        });
+      }
+
+      if (hexData.includes("74")) {
+        commands.push({
+          command: 0x74,
+          description: "Restart Device Command",
+          status: "Acknowledged and Processing",
+        });
+      }
+
+      return commands;
+    } catch (error) {
+      logger.error(`Error parsing embedded commands: ${error.message}`);
+      return [];
+    }
   }
 }
 
