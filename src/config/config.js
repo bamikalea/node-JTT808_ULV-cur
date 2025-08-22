@@ -52,7 +52,14 @@ module.exports = {
     sessionTimeout: parseInt(process.env.SESSION_TIMEOUT) || 3600000, // 1 hour
     allowedTerminals: process.env.ALLOWED_TERMINALS
       ? process.env.ALLOWED_TERMINALS.split(",").map((id) => id.trim())
-      : ["12345678", "87654321", "11111111", "22222222", "628076842334", "098765432109"],
+      : [
+          "12345678",
+          "87654321",
+          "11111111",
+          "22222222",
+          "628076842334",
+          "098765432109",
+        ],
     authSecret: process.env.AUTH_SECRET || "JT808_SECRET",
   },
 
