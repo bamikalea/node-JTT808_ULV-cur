@@ -1,0 +1,125 @@
+#!/bin/bash
+
+# Vultr Server Update Script
+# This script updates the Vultr server with the latest code changes
+
+echo "🚀 Vultr Server Update Script"
+echo "============================="
+echo ""
+
+# Check if VULTR_IP is provided
+if [ -z "$1" ]; then
+    echo "❌ Error: Vultr server IP address required!"
+    echo ""
+    echo "Usage: ./update-vultr-server.sh YOUR_VULTR_IP"
+    echo "Example: ./update-vultr-server.sh 123.456.789.012"
+    echo ""
+    echo "🔍 To find your Vultr IP:"
+    echo "   • Check your Vultr dashboard"
+    echo "   • Look for the server's public IP address"
+    echo ""
+    exit 1
+fi
+
+VULTR_IP="$1"
+echo "📱 Updating Vultr server at: $VULTR_IP"
+echo ""
+
+echo "📋 Update Summary:"
+echo "=================="
+echo "✅ ULV Message Routing Fix: 0x900 → handleDeviceDataReport"
+echo "✅ Restart Command Parsing: Proper 0x74 detection"
+echo "✅ Device ID Fix: 098765432109 properly recognized"
+echo "✅ Leading Zero Preservation: All device IDs maintained"
+echo "✅ Enhanced ULV Protocol Support"
+echo ""
+
+echo "🚀 Starting Vultr Server Update..."
+echo "================================="
+echo ""
+
+# Step 1: SSH into Vultr server
+echo "1️⃣ Connecting to Vultr server..."
+echo "   SSH: root@$VULTR_IP"
+echo ""
+
+# Step 2: Update commands
+echo "2️⃣ Commands to run on Vultr server:"
+echo "===================================="
+echo ""
+echo "# Navigate to project directory"
+echo "cd /root/node-JTT808_ULV-cur"
+echo ""
+echo "# Stop the current server"
+echo "pm2 stop jt808-server"
+echo ""
+echo "# Pull latest code from GitHub"
+echo "git pull origin main"
+echo ""
+echo "# Install dependencies (if needed)"
+echo "npm install"
+echo ""
+echo "# Start the updated server"
+echo "pm2 start jt808-server"
+echo ""
+echo "# Check server status"
+echo "pm2 status"
+echo ""
+echo "# Monitor server logs"
+echo "pm2 logs jt808-server"
+echo ""
+
+# Step 3: Verification steps
+echo "3️⃣ Verification Steps:"
+echo "======================"
+echo ""
+echo "✅ Check if server is running:"
+echo "   pm2 status"
+echo ""
+echo "✅ Check server logs:"
+echo "   pm2 logs jt808-server"
+echo ""
+echo "✅ Test restart command:"
+echo "   Send ULV restart command (0x74) to server"
+echo "   Monitor logs for proper ULV message parsing"
+echo ""
+echo "✅ Verify device ID support:"
+echo "   Check if 098765432109 is recognized"
+echo ""
+
+# Step 4: SSH connection command
+echo "4️⃣ Connect to Vultr Server:"
+echo "============================"
+echo ""
+echo "🔗 SSH Command:"
+echo "ssh root@$VULTR_IP"
+echo ""
+echo "📁 Project Directory:"
+echo "cd /root/node-JTT808_ULV-cur"
+echo ""
+
+# Step 5: Quick update commands
+echo "5️⃣ Quick Update Commands (copy & paste):"
+echo "========================================="
+echo ""
+echo "pm2 stop jt808-server && git pull origin main && npm install && pm2 start jt808-server && pm2 status"
+echo ""
+
+echo "🎯 Ready to update Vultr server!"
+echo "================================="
+echo ""
+echo "📱 Next steps:"
+echo "   1. SSH into your Vultr server"
+echo "   2. Run the update commands above"
+echo "   3. Verify the server is running"
+echo "   4. Test the ULV restart command"
+echo "   5. Check device ID recognition"
+echo ""
+echo "🚀 The updated server will have:"
+echo "   • Fixed ULV message routing"
+echo "   • Working restart commands"
+echo "   • Proper device ID handling"
+echo "   • Enhanced ULV protocol support"
+echo ""
+echo "Need help with any step? Let me know!"
+echo "====================================="

@@ -136,6 +136,18 @@ class JT808Server {
       0x0107,
       this.handleTerminalAttributesResponse.bind(this)
     );
+
+    // Add photo capture command handler
+    this.messageHandlers.set(
+      0x8801,
+      this.handlePhotoCaptureCommand.bind(this)
+    );
+
+    // Add driver identity information report handler
+    this.messageHandlers.set(
+      0x702,
+      this.handleDriverIdentityReport.bind(this)
+    );
   }
 
   handleConnection(socket) {
@@ -2537,6 +2549,31 @@ class JT808Server {
     return Math.floor(Math.random() * 65536);
   }
 
+  /**
+   * Parse JTT2019 timestamp (seconds since 2000-01-01 UTC)
+   * @param {Buffer} timestampBuffer - 4-byte buffer containing timestamp
+   * @returns {string} Formatted date string
+   */
+  parseJTT2019Timestamp(timestampBuffer) {
+    try {
+      if (timestampBuffer.length < 4) {
+        return "Invalid timestamp";
+      }
+      
+      // Read 4-byte timestamp (seconds since 2000-01-01 UTC)
+      const secondsSince2000 = timestampBuffer.readUInt32LE(0);
+      
+      // Convert to milliseconds and add to 2000-01-01 UTC
+      const timestamp = new Date(Date.UTC(2000, 0, 1) + (secondsSince2000 * 1000));
+      
+      // Format as ISO string
+      return timestamp.toISOString();
+    } catch (error) {
+      logger.error(`Error parsing JTT2019 timestamp: ${error.message}`);
+      return "Timestamp parse error";
+    }
+  }
+
   escapeAndWrapMessage(message) {
     // Escape special characters according to 2.2.1
     const escaped = [];
@@ -4925,6 +4962,95 @@ class JT808Server {
       commandNames[commandWord] ||
       `Unknown Command 0x${commandWord.toString(16).padStart(2, "0")}`
     );
+  }
+
+  /**
+   * 📸 Handle Photo Capture Command (0x8801) from terminal
+   * This is the response to our photo capture request
+   */
+  handlePhotoCaptureCommand(connection, messageData) {
+    try {
+      const terminalId = connection.terminalId;
+      logger.info(`📸 Photo Capture Command received from terminal ${terminalId}`);
+      
+      // Parse photo capture command parameters
+      if (messageData.length >= 8) {
+        const channelId = messageData[0];
+        const eventCode = messageData[1];
+        const format = messageData[2];
+        const resolution = messageData[3];
+        const quality = messageData[4];
+        const brightness = messageData[5];
+        const contrast = messageData[6];
+        const saturation = messageData[7];
+        
+        logger.info(`📸 Photo Capture Parameters:`);
+        logger.info(`  Channel ID: ${channelId}`);
+        logger.info(`  Event Code: ${eventCode} (${eventCode === 1 ? 'Platform Instruction' : 'Other'})`);
+        logger.info(`  Format: ${format} (${format === 0 ? 'JPEG' : 'Other'})`);
+        logger.info(`  Resolution: ${resolution} (${resolution === 1 ? '320x240' : 'Other'})`);
+        logger.info(`  Quality: ${quality}%`);
+        logger.info(`  Brightness: ${brightness}`);
+        logger.info(`  Contrast: ${contrast}`);
+        logger.info(`  Saturation: ${saturation}`);
+        
+        // Create a mock message object for the response
+        const mockMessage = {
+          messageSerialNumber: this.generateSerialNumber(),
+          messageId: 0x8801
+        };
+        
+        // Send acknowledgment (0x8001)
+        this.sendGeneralResponse(connection.socket, mockMessage, 0x00);
+        
+        logger.info(`✅ Photo capture command acknowledged for terminal ${terminalId}`);
+      } else {
+        logger.warn(`⚠️ Invalid photo capture command format from terminal ${terminalId}`);
+      }
+    } catch (error) {
+      logger.error(`Error handling photo capture command: ${error.message}`);
+    }
+  }
+
+  /**
+   * 🆔 Handle Driver Identity Information Report (0x702)
+   * ULV Protocol V2.0.0 Section 3.9
+   */
+  handleDriverIdentityReport(connection, messageData) {
+    try {
+      const terminalId = connection.terminalId;
+      logger.info(`🆔 Driver Identity Report received from terminal ${terminalId}`);
+      
+      // Parse driver identity data according to ULV protocol
+      if (messageData.length >= 4) {
+        const driverIdLength = messageData[0];
+        const driverId = messageData.slice(1, 1 + driverIdLength).toString('utf8');
+        const qualificationCode = messageData[1 + driverIdLength];
+        const issueDate = messageData.slice(2 + driverIdLength, 6 + driverIdLength);
+        const expiryDate = messageData.slice(6 + driverIdLength, 10 + driverIdLength);
+        
+        logger.info(`🆔 Driver Identity Information:`);
+        logger.info(`  Driver ID: ${driverId}`);
+        logger.info(`  Qualification Code: 0x${qualificationCode.toString(16).padStart(2, '0')}`);
+        logger.info(`  Issue Date: ${this.parseJTT2019Timestamp(issueDate)}`);
+        logger.info(`  Expiry Date: ${this.parseJTT2019Timestamp(expiryDate)}`);
+        
+        // Create a mock message object for the response
+        const mockMessage = {
+          messageSerialNumber: this.generateSerialNumber(),
+          messageId: 0x702
+        };
+        
+        // Send acknowledgment (0x8001)
+        this.sendGeneralResponse(connection.socket, mockMessage, 0x00);
+        
+        logger.info(`✅ Driver identity report acknowledged for terminal ${terminalId}`);
+      } else {
+        logger.warn(`⚠️ Invalid driver identity report format from terminal ${terminalId}`);
+      }
+    } catch (error) {
+      logger.error(`Error handling driver identity report: ${error.message}`);
+    }
   }
 
   /**

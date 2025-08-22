@@ -1,0 +1,9 @@
+version: "2"
+authtoken: your_auth_token_here
+tunnels:
+  jt808:
+    proto: tcp
+    addr: 8080
+  http-api:
+    proto: http
+    addr: 3000

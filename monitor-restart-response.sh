@@ -1,0 +1,66 @@
+#!/bin/bash
+
+# Monitor Restart Command Response
+# This script monitors server logs for the ULV restart command response
+
+echo "🔍 Monitoring ULV Restart Command Response..."
+echo "============================================="
+echo ""
+
+echo "📡 Command Sent:"
+echo "================"
+echo "Message ID: 0x8105 (Terminal Control)"
+echo "Command Word: 0x74 (ULV Restart Device)"
+echo "Terminal: 628076842334"
+echo "Sequence: e6d7"
+echo "Time: $(date)"
+echo ""
+
+echo "🎯 Expected Response:"
+echo "===================="
+echo "Message ID: 0x900 (ULV Data Transparent Transmission)"
+echo "Content: Embedded restart command acknowledgment"
+echo "Handler: handleDataTransparentTransmission (Enhanced)"
+echo ""
+
+echo "📊 What to Look For:"
+echo "===================="
+echo "✅ 'ULV Transparent Data from terminal 628076842334'"
+echo "✅ 'ULV Vehicle Information:'"
+echo "✅ 'Additional Information Items:'"
+echo "✅ 'Reserved Field with Command Responses:'"
+echo "✅ '🎉 RESTART COMMAND ACKNOWLEDGED by device!'"
+echo "✅ 'Device is processing restart command'"
+echo "✅ 'Physical restart should occur shortly'"
+echo ""
+
+echo "🔍 Monitoring Instructions:"
+echo "=========================="
+echo "1. Check your server terminal for new log entries"
+echo "2. Look for ULV Transparent Data messages"
+echo "3. Search for '🎉 RESTART COMMAND ACKNOWLEDGED'"
+echo "4. Verify enhanced parsing is working"
+echo ""
+
+echo "🚀 ULV Protocol Status:"
+echo "======================="
+echo "✅ Command sent: 0x8105 with 0x74"
+echo "✅ Enhanced parsing enabled"
+echo "✅ Restart acknowledgment detection active"
+echo "⏳ Waiting for device response..."
+echo ""
+
+echo "💡 Key Success Indicators:"
+echo "========================="
+echo "1. Server detects 0x74 in embedded data"
+echo "2. Restart acknowledgment is logged clearly"
+echo "3. Embedded commands are parsed and displayed"
+echo "4. Device status shows restart processing"
+echo ""
+
+echo "🎉 Ready to monitor restart response!"
+echo "====================================="
+echo "Watch your server logs for enhanced ULV parsing"
+echo "Look specifically for '🎉 RESTART COMMAND ACKNOWLEDGED'"
+echo ""
+echo "📱 Monitor your server terminal now..."
