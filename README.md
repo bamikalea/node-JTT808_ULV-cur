@@ -1,13 +1,32 @@
-# JT808 ULV Server
+# DEVICE RESTART WORKING - JT808 ULV Server
+
+✅ **CONFIRMED WORKING**: Physical device restart functionality implemented and tested successfully.
 
 A professional JT808 protocol server implementation with ULV protocol support and JTT2019 compliance.
 
 ## 🚀 Features
 
+- **✅ DEVICE RESTART WORKING** - Physical device restart command confirmed working
 - **✅ JT808 Protocol Server** - Full JT808-2019 standard compliance
 - **✅ ULV Protocol Support** - Multimedia data handling (0x0801)
 - **✅ JTT2019 Date Format** - Proper timestamp handling (seconds since 2000-01-01)
 - **✅ HTTP API Server** - Easy monitoring and control
+
+## 🎯 Restart Command Implementation
+
+The device restart functionality has been successfully implemented and tested:
+
+- **Message ID**: `0x8105` (Terminal Control)
+- **Body Format**: `[0x00, 0x74]` (Parameter Length + Command Word)
+- **Protocol**: ULV Protocol V2.0.0-2019 Table 3.20
+- **Status**: ✅ **CONFIRMED WORKING** - Physical device restarts successfully
+
+### Test Restart Command
+```bash
+curl -X POST http://localhost:3000/api/terminal/restart \
+  -H "Content-Type: application/json" \
+  -d '{"terminalId": "628076842334"}'
+```
 - **✅ Raw Video Feed Logging** - Monitor all multimedia data
 - **✅ Clean Architecture** - No unnecessary complexity
 - **✅ Vendor Ready** - Addresses vendor date format requirements
