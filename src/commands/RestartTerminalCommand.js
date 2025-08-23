@@ -25,12 +25,19 @@ class RestartTerminalCommand extends BaseCommand {
       // Step 1: Create command body according to ULV Protocol Table 3.20
       this.debug('BODY_CREATION', 'Creating restart command body with ULV Protocol V2.0.0-2019 command word 0x74');
       
-      // ULV Protocol Table 3.20: Terminal Control message body is 1 byte command word
-      const body = Buffer.alloc(1);
-      body.writeUInt8(this.commandWord, 0);
+      // ULV Protocol V2.0.0-2019 Table 3.20: Terminal Control with Parameter Length + Command Word
+      const body = Buffer.alloc(2);
+      let offset = 0;
+      
+      // Command Parameter Length (1 byte) - 0x00 for no additional parameters
+      body.writeUInt8(0x00, offset);
+      offset += 1;
+      
+      // Command Word (1 byte) - 0x74 for restart device
+      body.writeUInt8(this.commandWord, offset);
       
       this.debug('BODY_CREATION', `Command body created: ${body.toString('hex')} (${body.length} bytes)`);
-      this.debug('BODY_CREATION', `Command word: 0x${this.commandWord.toString(16).toUpperCase()} (Restart device - ULV Protocol Table 3.20)`);
+      this.debug('BODY_CREATION', `Parameter Length: 0x00, Command word: 0x${this.commandWord.toString(16).toUpperCase()} (Restart device - ULV Protocol Table 3.20)`);
       
       // Step 2: Send message to terminal using ULV Protocol V2.0.0-2019 format
       this.debug('MESSAGE_TRANSMISSION', `Sending restart command (0x${this.messageId.toString(16).toUpperCase()}) with command byte 0x${this.commandWord.toString(16).toUpperCase()}`);
@@ -74,7 +81,7 @@ class RestartTerminalCommand extends BaseCommand {
       section: '3.20 Terminal control',
       tableReference: 'Table 3.20',
       description: 'Sends restart command to device according to ULV Protocol V2.0.0-2019 specification',
-      bodyFormat: '1 byte: Command word (0x74 = Restart device)',
+      bodyFormat: '2 bytes: Parameter Length (0x00) + Command word (0x74 = Restart device)',
       headerFormat: '17 bytes: ULV Protocol V2.0.0-2019 header (Table 2.2.2)',
       timeFormat: 'JTT2019 (DWORD seconds since 2000-01-01 00:00:00 UTC)',
       expectedResponse: '0x0001 General Response or 0x0900 ULV Data Transparent Transmission with restart acknowledgment'
