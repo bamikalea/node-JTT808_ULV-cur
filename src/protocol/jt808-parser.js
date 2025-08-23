@@ -97,28 +97,40 @@ class JT808Parser {
     // Remove markers and escape characters
     const unescapedData = this.unescapeMessage(messageData.slice(1, -1));
     
-    // Check minimum length for header
-    if (unescapedData.length < 10) {
-      throw new Error('Message too short for header');
+    // Check minimum length for ULV protocol header (17 bytes)
+    if (unescapedData.length < 17) {
+      throw new Error('Message too short for ULV protocol header (expected 17 bytes)');
     }
     
-    // Parse message header
+    // Parse ULV protocol message header according to Table 2.2.2
     const messageId = unescapedData.readUInt16BE(0);
-    const messageLength = unescapedData.readUInt16BE(2);
-    const messageSerialNumber = unescapedData.readUInt16BE(4);
-    const terminalId = unescapedData.readUInt32BE(6);
+    const properties = unescapedData.readUInt16BE(2);
+    const protocolVersion = unescapedData.readUInt8(4);
+    const terminalPhoneNumber = unescapedData.slice(5, 15); // BCD[10]
+    const messageSerialNumber = unescapedData.readUInt16BE(15);
+    
+    // Extract message body length from properties (bits 0-9)
+    const messageLength = properties & 0x3FF;
+    
+    // Validate protocol version
+    if (protocolVersion !== 1) {
+      throw new Error(`Invalid protocol version: ${protocolVersion}, expected 1`);
+    }
     
     // Check if we have enough data for body and checksum
-    if (unescapedData.length < 10 + messageLength + 1) {
+    if (unescapedData.length < 17 + messageLength + 1) {
       throw new Error('Message too short for body and checksum');
     }
     
     // Extract message body
-    const body = unescapedData.slice(10, 10 + messageLength);
+    const body = unescapedData.slice(17, 17 + messageLength);
     
     // Verify checksum
-    const calculatedChecksum = this.calculateChecksum(unescapedData.slice(0, 10 + messageLength));
-    const receivedChecksum = unescapedData[10 + messageLength];
+    const calculatedChecksum = this.calculateChecksum(unescapedData.slice(0, 17 + messageLength));
+    const receivedChecksum = unescapedData[17 + messageLength];
+    
+    // Convert terminal phone number from BCD to string for compatibility
+    const terminalId = this.parseBCDPhoneNumber(terminalPhoneNumber);
     
     if (calculatedChecksum !== receivedChecksum) {
       throw new Error(`Checksum verification failed: calculated=${calculatedChecksum}, received=${receivedChecksum}`);
@@ -155,7 +167,7 @@ class JT808Parser {
       // Extract the actual message data
       const actualData = messageData.slice(dataStart, dataEnd);
       
-      if (actualData.length >= 17) { // JT808 header is 17 bytes
+      if (actualData.length >= 17) { // ULV Protocol header is 17 bytes (Table 2.2.2)
         const messageId = actualData.readUInt16BE(0);
         const properties = actualData.readUInt16BE(2);
         const protocolVersion = actualData.readUInt8(4);
@@ -164,6 +176,11 @@ class JT808Parser {
         
         // Extract message body length from properties (bits 0-9)
         const messageBodyLength = properties & 0x3FF;
+        
+        // Validate protocol version (ULV Protocol uses version 1)
+        if (protocolVersion !== 1) {
+          logger.debug(`⚠️ Unexpected protocol version: ${protocolVersion}, expected 1`);
+        }
         
         // Debug logging
         logger.debug(`JT808 Alternative format parsing:`);
@@ -221,28 +238,59 @@ class JT808Parser {
   /**
    * Build a JT808 message from message ID and body
    * @param {number|Buffer} messageIdOrBody - Message ID (number) or complete message body (Buffer)
-   * @param {Buffer} [body] - Message body data (if messageId is provided)
+   * @param {Buffer|number} [bodyOrMessageId] - Message body data (if messageId is provided) or messageId (if terminalId is third param)
+   * @param {string|number} [terminalId] - Terminal ID for response messages
    * @returns {Buffer} - Complete JT808 message
    */
-  buildMessage(messageIdOrBody, body) {
+  buildMessage(messageIdOrBody, bodyOrMessageId, terminalId) {
     let messageId, messageBody;
     
-    if (typeof messageIdOrBody === 'number') {
+    if (typeof messageIdOrBody === 'number' && terminalId !== undefined) {
+      // Three-parameter call: buildMessage(messageBody, messageId, terminalId)
+      messageBody = bodyOrMessageId;
+      messageId = messageIdOrBody;
+    } else if (typeof messageIdOrBody === 'number') {
       // Two-parameter call: buildMessage(messageId, body)
       messageId = messageIdOrBody;
-      messageBody = body;
+      messageBody = bodyOrMessageId;
     } else {
       // Single-parameter call: buildMessage(messageBody) - legacy support
       messageBody = messageIdOrBody;
       messageId = messageBody.readUInt16BE(0);
     }
     
-    // Create message header
-    const header = Buffer.alloc(10);
-    header.writeUInt16BE(messageId, 0); // Message ID
-    header.writeUInt16BE(messageBody.length, 2); // Message length
-    header.writeUInt16BE(this.generateSerialNumber(), 4); // Serial number
-    header.writeUInt32BE(0, 6); // Terminal ID (0 for platform messages)
+    // Create ULV protocol header (17 bytes) according to Table 2.2.2
+    const header = Buffer.alloc(17);
+    
+    // Message ID (2 bytes)
+    header.writeUInt16BE(messageId, 0);
+    
+    // Properties (2 bytes) - includes message body length and version ID
+    const properties = (messageBody.length & 0x3FF) | (1 << 14); // Version ID = 1 (bit 14)
+    header.writeUInt16BE(properties, 2);
+    
+    // Protocol version (1 byte) - ULV Protocol uses version 1
+    header.writeUInt8(1, 4);
+    
+    // Terminal phone number (10 bytes BCD) - use zeros for platform messages or convert terminalId
+    if (terminalId) {
+      // Convert terminal ID to BCD format according to ULV Protocol Table 2.2.2
+      const phoneStr = terminalId.toString().padStart(12, '0');
+      for (let i = 0; i < 6; i++) {
+        const digit1 = parseInt(phoneStr[i * 2], 10);
+        const digit2 = parseInt(phoneStr[i * 2 + 1], 10);
+        const bcdByte = (digit1 << 4) | digit2;
+        header.writeUInt8(bcdByte, 5 + i);
+      }
+      // Fill remaining 4 bytes with zeros (ULV uses 6-byte phone numbers in 10-byte field)
+      header.fill(0, 11, 15);
+    } else {
+      // Use zeros for platform messages
+      header.fill(0, 5, 15);
+    }
+    
+    // Message serial number (2 bytes)
+    header.writeUInt16BE(this.generateSerialNumber(), 15);
     
     // Combine header and body
     const messageData = Buffer.concat([header, messageBody]);
@@ -316,6 +364,31 @@ class JT808Parser {
       checksum ^= data[i];
     }
     return checksum;
+  }
+
+  /**
+   * Parse BCD encoded phone number according to ULV protocol
+   * @param {Buffer} bcdBytes - 10 bytes of BCD encoded phone number
+   * @returns {string} - Phone number as string
+   */
+  parseBCDPhoneNumber(bcdBytes) {
+    if (bcdBytes.length !== 10) {
+      throw new Error(`Invalid BCD phone number length: ${bcdBytes.length}, expected 10`);
+    }
+    
+    let phoneNumber = '';
+    for (let i = 0; i < bcdBytes.length; i++) {
+      const byte = bcdBytes[i];
+      const high = (byte >> 4) & 0x0F;
+      const low = byte & 0x0F;
+      
+      // Skip padding (0xF)
+      if (high !== 0xF) phoneNumber += high.toString();
+      if (low !== 0xF) phoneNumber += low.toString();
+    }
+    
+    // Remove leading zeros and return as number for compatibility
+    return parseInt(phoneNumber) || 0;
   }
 
   /**

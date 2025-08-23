@@ -56,7 +56,8 @@ class JT808Server {
       0x8800,
       this.handleMultimediaPlatformResponse.bind(this)
     );
-    this.messageHandlers.set(0x900, this.handleDeviceDataReport.bind(this)); // ULV Device Data Report - for restart command parsing
+    this.messageHandlers.set(0x0900, this.handleDeviceDataReport.bind(this)); // ULV Data Transparent Transmission (Device)
+    this.messageHandlers.set(0x900, this.handleDeviceDataReport.bind(this)); // Alternative format
     this.messageHandlers.set(
       0x8100,
       this.handleTerminalRegisterResponse.bind(this)
@@ -138,16 +139,10 @@ class JT808Server {
     );
 
     // Add photo capture command handler
-    this.messageHandlers.set(
-      0x8801,
-      this.handlePhotoCaptureCommand.bind(this)
-    );
+    this.messageHandlers.set(0x8801, this.handlePhotoCaptureCommand.bind(this));
 
     // Add driver identity information report handler
-    this.messageHandlers.set(
-      0x702,
-      this.handleDriverIdentityReport.bind(this)
-    );
+    this.messageHandlers.set(0x702, this.handleDriverIdentityReport.bind(this));
   }
 
   handleConnection(socket) {
@@ -224,8 +219,7 @@ class JT808Server {
 
     // Log raw data for debugging
     logger.debug(
-      `Raw data from ${connectionId}: ${data.toString("hex")} (${
-        data.length
+      `Raw data from ${connectionId}: ${data.toString("hex")} (${data.length
       } bytes)`
     );
 
@@ -251,8 +245,7 @@ class JT808Server {
       this.handleMessage(message, connection, connectionId);
     } catch (error) {
       logger.error(
-        `Error parsing message from ${connectionId}: ${
-          error.message
+        `Error parsing message from ${connectionId}: ${error.message
         } - data: ${data.toString("hex")}`
       );
     }
@@ -455,25 +448,36 @@ class JT808Server {
     logger.info(`Terminal authentication response from ${connectionId}`);
 
     try {
-      // Parse authentication response according to JT808 protocol
-      // Message body contains: Authentication code length + Authentication code content + Terminal IMEI + Firmware version
-      if (message.body.length < 2) {
+      // Parse authentication response according to ULV Protocol Table 3.4
+      // Message body structure: Authentication code length(1) + Authentication code content(n) + Terminal IMEI(15) + Firmware version(20)
+      if (message.body.length < 36) { // Minimum: 1 + 0 + 15 + 20 = 36 bytes
         logger.warn(
-          `Authentication response too short: ${message.body.length} bytes`
+          `Authentication response too short: ${message.body.length} bytes, expected at least 36`
         );
         return;
       }
 
       const authCodeLength = message.body.readUInt8(0);
+
+      // Validate authentication code length
+      if (message.body.length < 1 + authCodeLength + 15 + 20) {
+        logger.warn(
+          `Authentication message incomplete: expected ${1 + authCodeLength + 15 + 20} bytes, got ${message.body.length}`
+        );
+        return;
+      }
+
       const authCode = message.body
         .slice(1, 1 + authCodeLength)
         .toString("ascii");
       const terminalIMEI = message.body
         .slice(1 + authCodeLength, 1 + authCodeLength + 15)
-        .toString("ascii");
+        .toString("ascii")
+        .replace(/\0/g, ""); // Remove null padding
       const firmwareVersion = message.body
         .slice(1 + authCodeLength + 15, 1 + authCodeLength + 35)
-        .toString("ascii");
+        .toString("ascii")
+        .replace(/\0/g, ""); // Remove null padding
 
       logger.info(
         `Authentication response: Code=${authCode}, IMEI=${terminalIMEI}, Firmware=${firmwareVersion}`
@@ -531,10 +535,9 @@ class JT808Server {
       );
       logger.info(`  Time: ${locationData.time}`);
       logger.info(
-        `  Alarm Flags: ${
-          Object.keys(locationData.alarmFlags).length > 0
-            ? JSON.stringify(locationData.alarmFlags)
-            : "None"
+        `  Alarm Flags: ${Object.keys(locationData.alarmFlags).length > 0
+          ? JSON.stringify(locationData.alarmFlags)
+          : "None"
         }`
       );
       logger.info(
@@ -686,8 +689,7 @@ class JT808Server {
       offset += 1;
 
       logger.info(
-        `Bulk Location Report: ${numberOfItems} items, Type: ${
-          dataType === 0 ? "Normal Position" : "Supplementary Blind Area"
+        `Bulk Location Report: ${numberOfItems} items, Type: ${dataType === 0 ? "Normal Position" : "Supplementary Blind Area"
         }`
       );
 
@@ -753,18 +755,35 @@ class JT808Server {
       // This is a ULV 0x0900 message - parse it according to ULV protocol
       const ulvData = this.parseULVDeviceDataReport(message.body);
 
-      logger.info(`ULV Device Data Report Details:`);
-      logger.info(`  Message Type: 0x0900 (ULV Device Data Report)`);
-      logger.info(`  Data Length: ${ulvData.data.length} bytes`);
+      logger.info(`ULV Data Transparent Transmission (0x0900) Details:`);
+      logger.info(`  Message Type: 0x0900 (Data Transparent Transmission)`);
+      logger.info(`  Transparent Message Type: 0x${ulvData.transparentMessageType?.toString(16) || 'unknown'}`);
+      logger.info(`  Data Length: ${ulvData.transparentData?.length || 0} bytes`);
       logger.info(`  Terminal ID: ${connection.terminalId}`);
+      logger.info(`  Device Status: ${ulvData.deviceStatus || 'Unknown'}`);
+
+      // Log parsed data based on type
+      if (ulvData.parsedData) {
+        logger.info(`  Parsed Data:`);
+        if (ulvData.parsedData.type) {
+          logger.info(`    Type: ${ulvData.parsedData.type}`);
+        }
+        if (ulvData.parsedData.latitude && ulvData.parsedData.longitude) {
+          logger.info(`    Location: ${ulvData.parsedData.latitude}, ${ulvData.parsedData.longitude}`);
+          logger.info(`    Speed: ${ulvData.parsedData.speed} km/h, Direction: ${ulvData.parsedData.direction}°`);
+          logger.info(`    Time: ${ulvData.parsedData.time}`);
+        }
+        if (ulvData.parsedData.data) {
+          logger.info(`    OBD Data: ${ulvData.parsedData.data}`);
+        }
+      }
 
       // Check for embedded command responses
       if (ulvData.embeddedCommands && ulvData.embeddedCommands.length > 0) {
         logger.info(`  Embedded Command Responses:`);
         ulvData.embeddedCommands.forEach((cmd, index) => {
           logger.info(
-            `    ${index + 1}. Command: 0x${cmd.command.toString(16)} - ${
-              cmd.description
+            `    ${index + 1}. Command: 0x${cmd.command.toString(16)} - ${cmd.description
             }`
           );
           logger.info(`       Status: ${cmd.status}`);
@@ -779,18 +798,6 @@ class JT808Server {
         logger.info(`🎉 RESTART COMMAND ACKNOWLEDGED by device!`);
         logger.info(`   Device is processing restart command`);
         logger.info(`   Physical restart should occur shortly`);
-      }
-
-      // Log additional ULV-specific information
-      if (ulvData.deviceStatus) {
-        logger.info(`  Device Status: ${ulvData.deviceStatus}`);
-      }
-
-      if (ulvData.timestamps && ulvData.timestamps.length > 0) {
-        logger.info(`  Timestamps:`);
-        ulvData.timestamps.forEach((ts, index) => {
-          logger.info(`    ${index + 1}. ${ts}`);
-        });
       }
 
       // Send acknowledgment (ULV devices expect this)
@@ -808,68 +815,86 @@ class JT808Server {
     }
   }
 
-  // Parse ULV Device Data Report (0x0900) messages
+  // Parse ULV Device Data Report (0x0900) messages according to Table 3.10.1
   parseULVDeviceDataReport(body) {
     try {
       const result = {
-        data: body,
+        transparentMessageType: null,
+        transparentData: null,
+        parsedData: null,
         embeddedCommands: [],
         hasRestartAcknowledgment: false,
         deviceStatus: null,
         timestamps: [],
       };
 
-      // Convert body to hex string for pattern matching
-      const hexData = body.toString("hex");
-
-      logger.debug(`Parsing ULV 0x0900 message body: ${hexData}`);
-
-      // Look for embedded command patterns
-      if (hexData.includes("0105")) {
-        result.embeddedCommands.push({
-          command: 0x0105,
-          description: "Terminal Authentication",
-          status: "Processed",
-          timestamp: null,
-        });
+      if (body.length < 1) {
+        throw new Error('0x0900 message body too short');
       }
 
-      if (hexData.includes("0100")) {
-        result.embeddedCommands.push({
-          command: 0x0100,
-          description: "Terminal Authentication Response",
-          status: "Acknowledged",
-          timestamp: null,
-        });
-      }
+      // Parse according to Table 3.10.1 structure
+      const transparentMessageType = body.readUInt8(0);
+      const transparentData = body.slice(1);
 
-      if (hexData.includes("020b")) {
-        result.embeddedCommands.push({
-          command: 0x020b,
-          description: "Command Processing",
-          status: "In Progress",
-          timestamp: null,
-        });
-      }
+      result.transparentMessageType = transparentMessageType;
+      result.transparentData = transparentData;
 
-      if (hexData.includes("0312")) {
-        result.embeddedCommands.push({
-          command: 0x0312,
-          description: "Additional Command Processing",
-          status: "Completed",
-          timestamp: null,
-        });
-      }
+      logger.debug(`Parsing ULV 0x0900 message: type=0x${transparentMessageType.toString(16)}, data=${transparentData.toString('hex')}`);
 
-      // Check for restart command acknowledgment (0x74 in embedded data)
-      if (hexData.includes("74")) {
-        result.hasRestartAcknowledgment = true;
-        result.embeddedCommands.push({
-          command: 0x74,
-          description: "Restart Device Command",
-          status: "Acknowledged and Processing",
-          timestamp: null,
-        });
+      // Convert transparent data to hex for pattern matching
+      const hexData = transparentData.toString("hex");
+
+      // Parse based on transparent message type (Table 3.10.2)
+      switch (transparentMessageType) {
+        case 0xF0:
+          // GPS data transmission (Table 3.10.3)
+          result.parsedData = this.parseGPSTransparentData(transparentData);
+          result.deviceStatus = "GPS Data Transmission";
+          break;
+
+        case 0xF1:
+          // GPS/OBD data transmission (Table 3.10.6/3.10.5)
+          result.parsedData = this.parseGPSOBDData(transparentData);
+          result.deviceStatus = "GPS/OBD Data Transmission";
+          break;
+
+        case 0xA1:
+          // WiFi Information (Table 3.10.7)
+          result.parsedData = this.parseWiFiData(transparentData);
+          result.deviceStatus = "WiFi Information";
+          break;
+
+        default:
+          if (transparentMessageType >= 0xF0 && transparentMessageType <= 0xFF) {
+            // User-defined transparent message
+            result.parsedData = this.parseUserDefinedData(transparentData);
+            result.deviceStatus = "User-defined Data";
+
+            // Check for restart command acknowledgment (0x74 in embedded data)
+            if (hexData.includes("74")) {
+              result.hasRestartAcknowledgment = true;
+              result.embeddedCommands.push({
+                command: 0x74,
+                description: "Restart Device Command",
+                status: "Acknowledged and Processing",
+                timestamp: null,
+              });
+            }
+
+            // Look for other embedded command patterns
+            if (hexData.includes("0105")) {
+              result.embeddedCommands.push({
+                command: 0x0105,
+                description: "Terminal Control Response",
+                status: "Processed",
+                timestamp: null,
+              });
+            }
+          } else {
+            result.deviceStatus = "Unknown Message Type";
+            logger.warn(`Unknown transparent message type: 0x${transparentMessageType.toString(16)}`);
+          }
+          break;
       }
 
       // Extract timestamps (JTT2019 format: YYMMDDHHMMSS)
@@ -889,10 +914,10 @@ class JT808Server {
           const timestamp = `20${year.toString().padStart(2, "0")}-${month
             .toString()
             .padStart(2, "0")}-${day.toString().padStart(2, "0")} ${hour
-            .toString()
-            .padStart(2, "0")}:${minute.toString().padStart(2, "0")}:${second
-            .toString()
-            .padStart(2, "0")}`;
+              .toString()
+              .padStart(2, "0")}:${minute.toString().padStart(2, "0")}:${second
+                .toString()
+                .padStart(2, "0")}`;
           result.timestamps.push(timestamp);
         } catch (e) {
           // Skip invalid timestamps
@@ -911,12 +936,118 @@ class JT808Server {
     } catch (error) {
       logger.error(`Error parsing ULV device data report: ${error.message}`);
       return {
-        data: body,
-        embeddedCommands: [],
-        hasRestartAcknowledgment: false,
-        deviceStatus: "Unknown",
-        timestamps: [],
+        transparentMessageType: null,
+        transparentData: body,
+        error: error.message,
       };
+    }
+  }
+
+  // Parse GPS transparent data according to Table 3.10.3
+  parseGPSTransparentData(data) {
+    if (data.length < 39) {
+      throw new Error(`GPS transparent data too short: ${data.length} bytes, expected at least 39`);
+    }
+
+    let offset = 0;
+    const transmissionType = data.readUInt8(offset);
+    offset += 1;
+    const alarmSign = data.readUInt32BE(offset);
+    offset += 4;
+    const state = data.readUInt32BE(offset);
+    offset += 4;
+    const latitude = data.readUInt32BE(offset) / 1000000;
+    offset += 4;
+    const longitude = data.readUInt32BE(offset) / 1000000;
+    offset += 4;
+    const altitude = data.readUInt16BE(offset);
+    offset += 2;
+    const speed = data.readUInt16BE(offset) / 10;
+    offset += 2;
+    const direction = data.readUInt16BE(offset);
+    offset += 2;
+    const time = this.parseHexTime(data.slice(offset, offset + 6));
+    offset += 6;
+    const mileage = data.readUInt32BE(offset) / 10;
+    offset += 4;
+    const oilQuantity = data.readUInt16BE(offset) / 10;
+    offset += 2;
+    const vehicleStatus = data.readUInt32BE(offset);
+    offset += 4;
+    const networkSignal = data.readUInt8(offset);
+
+    return {
+      transmissionType,
+      alarmSign,
+      state,
+      latitude,
+      longitude,
+      altitude,
+      speed,
+      direction,
+      time,
+      mileage,
+      oilQuantity,
+      vehicleStatus,
+      networkSignal
+    };
+  }
+
+  // Parse GPS/OBD data according to Table 3.10.6/3.10.5
+  parseGPSOBDData(data) {
+    // Check if it's string format OBD data
+    const dataStr = data.toString('ascii');
+    if (dataStr.startsWith('$OBD-RT:')) {
+      return {
+        type: 'OBD_STRING',
+        data: dataStr.trim()
+      };
+    }
+
+    // Otherwise parse as binary GPS data (Table 3.10.6)
+    return this.parseGPSTransparentData(data);
+  }
+
+  // Parse WiFi data according to Table 3.10.7
+  parseWiFiData(data) {
+    // Implementation depends on Table 3.10.7 structure
+    return {
+      type: 'WIFI_INFO',
+      rawData: data.toString('hex')
+    };
+  }
+
+  // Parse user-defined data
+  parseUserDefinedData(data) {
+    return {
+      type: 'USER_DEFINED',
+      rawData: data.toString('hex'),
+      length: data.length
+    };
+  }
+
+  // Parse HEX time format (YY-MM-DD-hh-mm-ss)
+  parseHexTime(timeBytes) {
+    if (timeBytes.length !== 6) {
+      throw new Error(`Invalid HEX time length: ${timeBytes.length}, expected 6`);
+    }
+
+    try {
+      const year = 2000 + timeBytes[0];
+      const month = timeBytes[1];
+      const day = timeBytes[2];
+      const hour = timeBytes[3];
+      const minute = timeBytes[4];
+      const second = timeBytes[5];
+
+      const date = new Date(year, month - 1, day, hour, minute, second);
+      // Adjust for GMT+8 timezone (subtract 8 hours to get UTC)
+      const utcDate = new Date(date.getTime() - (8 * 60 * 60 * 1000));
+
+      return utcDate.toISOString();
+    } catch (error) {
+      logger.warn(`Error parsing HEX time: ${error.message}, raw bytes: ${timeBytes.toString('hex')}`);
+      return new Date().toISOString();
     }
   }
 
@@ -941,8 +1072,7 @@ class JT808Server {
 
       logger.info(`Data Transparent Transmission Details:`);
       logger.info(
-        `  Message Type: 0x${transparentData.messageType.toString(16)} (${
-          transparentData.messageTypeName
+        `  Message Type: 0x${transparentData.messageType.toString(16)} (${transparentData.messageTypeName
         })`
       );
       logger.info(`  Data Length: ${transparentData.data.length} bytes`);
@@ -1123,13 +1253,11 @@ class JT808Server {
         JSON.stringify(multimediaData, null, 2)
       );
       logger.debug(
-        `  Type check: multimediaData.type = ${
-          multimediaData.type
+        `  Type check: multimediaData.type = ${multimediaData.type
         } (${typeof multimediaData.type})`
       );
       logger.debug(
-        `  Format check: multimediaData.format = ${
-          multimediaData.format
+        `  Format check: multimediaData.format = ${multimediaData.format
         } (${typeof multimediaData.format})`
       );
 
@@ -1194,8 +1322,7 @@ class JT808Server {
       );
       logger.debug(`  Calculated media data start: ${mediaDataStart} bytes`);
       logger.debug(
-        `  Available bytes after mediaDataStart: ${
-          message.body.length - mediaDataStart
+        `  Available bytes after mediaDataStart: ${message.body.length - mediaDataStart
         } bytes`
       );
 
@@ -1247,8 +1374,7 @@ class JT808Server {
         }
       } else {
         logger.warn(
-          `Message body too short for media data extraction: ${
-            message.body.length
+          `Message body too short for media data extraction: ${message.body.length
           } bytes, need at least ${mediaDataStart + 1} bytes`
         );
       }
@@ -1555,8 +1681,7 @@ class JT808Server {
       const response = this.createGeneralResponse(message, 0x00);
       connection.socket.write(response);
       logger.debug(
-        `Multimedia platform response acknowledged for terminal ${
-          connection.terminalId || "unknown"
+        `Multimedia platform response acknowledged for terminal ${connection.terminalId || "unknown"
         }`
       );
     } catch (error) {
@@ -1839,10 +1964,12 @@ class JT808Server {
   }
 
   parseLocationData(body) {
-    // Parse location data according to JT808 protocol (Table 3.5.2)
-    if (body.length < 28) {
+    // Parse location data according to ULV Protocol Table 3.5.2 with JTT2019 time format
+    logger.debug(`Parsing location data: ${body.length} bytes, hex: ${body.toString('hex')}`);
+
+    if (body.length < 26) {
       throw new Error(
-        `Location message too short: ${body.length} bytes, expected at least 28`
+        `Location message too short: ${body.length} bytes, expected at least 26`
       );
     }
 
@@ -1863,10 +1990,11 @@ class JT808Server {
     offset += 2; // WORD - Speed * 0.1 km/h
     const direction = body.readUInt16BE(offset);
     offset += 2; // WORD - Direction 0-359°
+
+    // Parse JTT2019 time format (4 bytes DWORD - seconds since 2000-01-01 00:00:00 UTC)
+    // Custom implementation: Using JTT2019 instead of ULV Protocol BCD[6] format
     const timestamp = body.readUInt32BE(offset);
-    offset += 4; // DWORD - JTT2019 timestamp (seconds since 2000-01-01)
-    const reserved = body.readUInt16BE(offset);
-    offset += 2; // WORD - Reserved field
+    offset += 4; // DWORD - JTT2019 timestamp
 
     // Parse JTT2019 timestamp format
     const time = this.parseJTT2019Time(timestamp);
@@ -1878,6 +2006,7 @@ class JT808Server {
     const statusBits = this.parseStatusBits(condition);
 
     // Parse additional information items
+    logger.debug(`Additional info starts at offset ${offset}, remaining bytes: ${body.length - offset}`);
     const additionalInfo = this.parseAdditionalInfo(body.slice(offset));
 
     return {
@@ -1900,13 +2029,63 @@ class JT808Server {
     };
   }
 
-  // Parse JTT2019 timestamp format (seconds since 2000-01-01 00:00:00 UTC)
-  parseJTT2019Time(timestamp) {
-    const jtt2019Epoch = new Date("2000-01-01T00:00:00Z").getTime();
-    const utcTime = jtt2019Epoch + timestamp * 1000;
-    const date = new Date(utcTime);
+  // Parse BCD time format according to ULV Protocol Table 3.5.2
+  // Format: BCD[6] - YY-MM-DD-hh-mm-ss (GMT+8 time zone)
+  parseBCDTime(timeBytes) {
+    if (timeBytes.length !== 6) {
+      throw new Error(`Invalid BCD time length: ${timeBytes.length}, expected 6`);
+    }
 
-    return date.toISOString();
+    try {
+      // Convert BCD bytes to decimal values
+      const year = this.bcdToDecimal(timeBytes[0]);
+      const month = this.bcdToDecimal(timeBytes[1]);
+      const day = this.bcdToDecimal(timeBytes[2]);
+      const hour = this.bcdToDecimal(timeBytes[3]);
+      const minute = this.bcdToDecimal(timeBytes[4]);
+      const second = this.bcdToDecimal(timeBytes[5]);
+
+      // Construct date (assuming 20xx for year)
+      const fullYear = 2000 + year;
+
+      // Create date in GMT+8 timezone and convert to ISO string
+      const date = new Date(fullYear, month - 1, day, hour, minute, second);
+
+      // Adjust for GMT+8 timezone (subtract 8 hours to get UTC)
+      const utcDate = new Date(date.getTime() - (8 * 60 * 60 * 1000));
+
+      return utcDate.toISOString();
+    } catch (error) {
+      logger.warn(`Error parsing BCD time: ${error.message}, raw bytes: ${timeBytes.toString('hex')}`);
+      return new Date().toISOString(); // Fallback to current time
+    }
+  }
+
+  // Convert BCD byte to decimal
+  bcdToDecimal(bcdByte) {
+    const high = (bcdByte >> 4) & 0x0F;
+    const low = bcdByte & 0x0F;
+
+    if (high > 9 || low > 9) {
+      throw new Error(`Invalid BCD byte: 0x${bcdByte.toString(16)}`);
+    }
+
+    return high * 10 + low;
+  }
+
+  // Parse JTT2019 timestamp format (seconds since 2000-01-01 00:00:00 UTC)
+  // This is the primary time format used in ULV protocol location data
+  parseJTT2019Time(timestamp) {
+    try {
+      const jtt2019Epoch = new Date("2000-01-01T00:00:00Z").getTime();
+      const utcTime = jtt2019Epoch + timestamp * 1000;
+      const date = new Date(utcTime);
+
+      return date.toISOString();
+    } catch (error) {
+      logger.warn(`Error parsing JTT2019 time: ${error.message}, timestamp: ${timestamp}`);
+      return new Date().toISOString(); // Fallback to current time
+    }
   }
 
   // Parse alarm flags according to Table 3.5.3
@@ -1958,16 +2137,37 @@ class JT808Server {
     const items = {};
     let offset = 0;
 
+    logger.debug(`Parsing additional info: ${data.length} bytes total, data: ${data.toString('hex')}`);
+
     while (offset < data.length && offset + 2 <= data.length) {
       const infoId = data.readUInt8(offset);
       offset += 1;
       const infoLength = data.readUInt8(offset);
       offset += 1;
 
+      logger.debug(`Additional info item: ID=0x${infoId.toString(16)}, Length=${infoLength}, Remaining=${data.length - offset}`);
+
       if (offset + infoLength > data.length) {
         logger.warn(
-          `Additional info item ${infoId} length ${infoLength} exceeds remaining data`
+          `Additional info item 0x${infoId.toString(16)} length ${infoLength} exceeds remaining data (${data.length - offset} bytes available)`
         );
+
+        // Try to parse what we can with the remaining data
+        const remainingLength = data.length - offset;
+        if (remainingLength > 0) {
+          logger.debug(`Attempting to parse with available ${remainingLength} bytes instead`);
+          const partialData = data.slice(offset, offset + remainingLength);
+
+          // Store as unknown item with partial data
+          items[`partial_${infoId.toString(16)}`] = {
+            expectedLength: infoLength,
+            actualLength: remainingLength,
+            data: partialData.toString('hex'),
+            note: "Partial data due to length mismatch"
+          };
+
+          offset += remainingLength; // Move to end
+        }
         break;
       }
 
@@ -2094,10 +2294,19 @@ class JT808Server {
               16
             )} (length: ${infoLength})`
           );
-          items[`unknown_${infoId}`] = infoData.toString("hex");
+
+          // Store unknown items with more context
+          items[`unknown_0x${infoId.toString(16)}`] = {
+            id: infoId,
+            length: infoLength,
+            data: infoData.toString("hex"),
+            note: "Unknown additional info item"
+          };
+          break;
       }
     }
 
+    logger.debug(`Parsed additional info items: ${Object.keys(items).length} items`);
     return items;
   }
 
@@ -2202,14 +2411,19 @@ class JT808Server {
   }
 
   createRegisterResponse(originalMessage, result) {
-    const response = Buffer.alloc(12);
-    response.writeUInt16BE(0x8100, 0); // Message ID
-    response.writeUInt16BE(originalMessage.messageSerialNumber, 2);
-    response.writeUInt32BE(originalMessage.terminalId, 4);
-    response.writeUInt16BE(1, 8); // Result count
-    response.writeUInt16BE(result, 10); // Result
+    // Message body for 0x8100 registration response
+    const messageBody = Buffer.alloc(5);
+    messageBody.writeUInt16BE(originalMessage.messageSerialNumber, 0); // Response serial number
+    messageBody.writeUInt8(result, 2); // Result code
 
-    return this.parser.buildMessage(response);
+    if (result === 0) {
+      // Success - include authentication code (2 bytes)
+      const authCode = Math.floor(Math.random() * 65535);
+      messageBody.writeUInt16BE(authCode, 3);
+    }
+
+    // Build complete message with proper header (terminal ID will be in BCD format in header)
+    return this.parser.buildMessage(0x8100, messageBody, originalMessage.terminalId);
   }
 
   createGeneralResponse(originalMessage, result) {
@@ -2365,21 +2579,31 @@ class JT808Server {
   }
 
   createLocationQueryResponse(originalMessage) {
-    // Create location query response
-    const response = Buffer.alloc(28);
-    response.writeUInt16BE(0x0201, 0); // Message ID
-    response.writeUInt16BE(originalMessage.messageSerialNumber, 2);
-    response.writeUInt32BE(originalMessage.terminalId, 4);
+    // Message body for 0x0201 location query response according to ULV Protocol Table 3.2.2
+    // Format: Response Serial Number (2) + Location Information (same as 0x0200)
+    const messageBody = Buffer.alloc(30);
 
-    // Add sample location data
-    response.writeUInt32BE(0, 8); // Alarm
-    response.writeUInt32BE(0, 12); // Status
-    response.writeInt32BE(40000000, 16); // Latitude (40.0)
-    response.writeInt32BE(116000000, 20); // Longitude (116.0)
-    response.writeUInt16BE(100, 24); // Altitude
-    response.writeUInt16BE(0, 26); // Speed
+    // Response serial number (2 bytes)
+    messageBody.writeUInt16BE(originalMessage.messageSerialNumber, 0);
 
-    return this.parser.buildMessage(response);
+    // Location information format according to ULV Protocol Table 3.2.1 (0x0200 format)
+    messageBody.writeUInt32BE(0, 2); // Alarm flags (4 bytes)
+    messageBody.writeUInt32BE(0, 6); // Status flags (4 bytes)
+    messageBody.writeUInt32BE(40000000, 10); // Latitude (4 bytes) - 40.0 degrees * 1000000
+    messageBody.writeUInt32BE(116000000, 14); // Longitude (4 bytes) - 116.0 degrees * 1000000
+    messageBody.writeUInt16BE(100, 18); // Altitude (2 bytes) - 100m
+    messageBody.writeUInt16BE(0, 20); // Speed (2 bytes) - 0 km/h * 10
+    messageBody.writeUInt16BE(0, 22); // Direction (2 bytes) - 0 degrees
+
+    // Time (JTT2019 format - 4 bytes) according to ULV Protocol V2.0.0-2019
+    const currentTime = this.isoTimeToJTT2019(new Date().toISOString());
+    messageBody.writeUInt32BE(currentTime, 24);
+
+    // Additional information length (2 bytes) - no additional info
+    messageBody.writeUInt16BE(0, 28);
+
+    // Build complete message with proper header
+    return this.parser.buildMessage(0x0201, messageBody, originalMessage.terminalId);
   }
 
   sendGeneralResponse(socket, message, result) {
@@ -2429,12 +2653,17 @@ class JT808Server {
   }
 
   createAuthenticationChallenge(originalMessage) {
-    const challenge = Buffer.alloc(8);
-    challenge.writeUInt16BE(0x8100, 0); // Message ID
-    challenge.writeUInt16BE(originalMessage.messageSerialNumber, 2);
-    challenge.writeUInt32BE(originalMessage.terminalId, 4);
+    // Message body for 0x8100 authentication challenge
+    const messageBody = Buffer.alloc(5);
+    messageBody.writeUInt16BE(originalMessage.messageSerialNumber, 0); // Response serial number
+    messageBody.writeUInt8(0, 2); // Result code (0 = success)
 
-    return this.parser.buildMessage(challenge);
+    // Generate authentication code (2 bytes)
+    const authCode = Math.floor(Math.random() * 65535);
+    messageBody.writeUInt16BE(authCode, 3);
+
+    // Build complete message with proper header
+    return this.parser.buildMessage(0x8100, messageBody, originalMessage.terminalId);
   }
 
   createAuthenticationResponse(originalMessage, result) {
@@ -2473,8 +2702,7 @@ class JT808Server {
       const heartbeatTimeout = connection.isAuthenticated ? 300000 : 60000; // 5 min vs 1 min
       if (now - connection.lastHeartbeat > heartbeatTimeout) {
         logger.info(
-          `Cleaning up inactive connection: ${connectionId} (last heartbeat: ${
-            now - connection.lastHeartbeat
+          `Cleaning up inactive connection: ${connectionId} (last heartbeat: ${now - connection.lastHeartbeat
           }ms ago)`
         );
 
@@ -2559,13 +2787,15 @@ class JT808Server {
       if (timestampBuffer.length < 4) {
         return "Invalid timestamp";
       }
-      
+
       // Read 4-byte timestamp (seconds since 2000-01-01 UTC)
       const secondsSince2000 = timestampBuffer.readUInt32LE(0);
-      
+
       // Convert to milliseconds and add to 2000-01-01 UTC
-      const timestamp = new Date(Date.UTC(2000, 0, 1) + (secondsSince2000 * 1000));
-      
+      const timestamp = new Date(
+        Date.UTC(2000, 0, 1) + secondsSince2000 * 1000
+      );
+
       // Format as ISO string
       return timestamp.toISOString();
     } catch (error) {
@@ -2606,12 +2836,14 @@ class JT808Server {
     if (message.rawData && message.rawData.length >= 17) {
       const phoneNumberBytes = message.rawData.slice(5, 11); // 6 bytes starting at offset 5
 
-      // Convert BCD to string
+      // Convert BCD to string according to ULV Protocol Table 2.2.2
       let phoneNumber = "";
       for (let i = 0; i < 6; i++) {
         const byte = phoneNumberBytes[i];
-        phoneNumber += Math.floor(byte / 16).toString(16);
-        phoneNumber += (byte % 16).toString(16);
+        const digit1 = (byte >> 4) & 0x0F; // High nibble
+        const digit2 = byte & 0x0F;        // Low nibble
+        phoneNumber += digit1.toString();
+        phoneNumber += digit2.toString();
       }
 
       logger.debug(
@@ -2623,8 +2855,7 @@ class JT808Server {
     }
 
     logger.warn(
-      `Cannot extract phone number - message.rawData length: ${
-        message.rawData ? message.rawData.length : "undefined"
+      `Cannot extract phone number - message.rawData length: ${message.rawData ? message.rawData.length : "undefined"
       }`
     );
     return null;
@@ -2651,10 +2882,13 @@ class JT808Server {
     const protocolVersion = Buffer.alloc(1);
     protocolVersion.writeUInt8(0x01, 0); // Protocol version 1
 
-    // Convert phone number to BCD format (6 bytes)
+    // Convert phone number to BCD format (6 bytes) according to ULV Protocol
     const bcdPhone = Buffer.alloc(6);
+    const phoneStr = terminalPhoneNumber.padStart(12, '0');
     for (let i = 0; i < 6; i++) {
-      bcdPhone[i] = parseInt(terminalPhoneNumber.substr(i * 2, 2), 16);
+      const digit1 = parseInt(phoneStr[i * 2], 10);
+      const digit2 = parseInt(phoneStr[i * 2 + 1], 10);
+      bcdPhone[i] = (digit1 << 4) | digit2;
     }
 
     const messageSerialNumber = Buffer.alloc(2);
@@ -2768,10 +3002,10 @@ class JT808Server {
       // Calculate total message body length
       const messageBody = Buffer.alloc(
         27 +
-          serverAddrBuffer.length +
-          usernameBuffer.length +
-          passwordBuffer.length +
-          uploadPathBuffer.length
+        serverAddrBuffer.length +
+        usernameBuffer.length +
+        passwordBuffer.length +
+        uploadPathBuffer.length
       );
 
       let offset = 0;
@@ -2808,48 +3042,30 @@ class JT808Server {
       messageBody.writeUInt8(channelId, offset);
       offset += 1;
 
-      // Start time (BCD format: YY-MM-DD-HH-MM-SS)
+      // Start time (JTT2019 format: 4 bytes DWORD)
       if (startTime) {
-        const startDate = new Date(startTime);
-        messageBody.writeUInt8(startDate.getFullYear() % 100, offset);
-        messageBody.writeUInt8(startDate.getMonth() + 1, offset + 1);
-        messageBody.writeUInt8(startDate.getDate(), offset + 2);
-        messageBody.writeUInt8(startDate.getHours(), offset + 3);
-        messageBody.writeUInt8(startDate.getMinutes(), offset + 4);
-        messageBody.writeUInt8(startDate.getSeconds(), offset + 5);
+        const startTimestamp = this.isoTimeToJTT2019(startTime);
+        messageBody.writeUInt32BE(startTimestamp, offset);
       } else {
         // Use current time if not specified
-        const now = new Date();
-        messageBody.writeUInt8(now.getFullYear() % 100, offset);
-        messageBody.writeUInt8(now.getMonth() + 1, offset + 1);
-        messageBody.writeUInt8(now.getDate(), offset + 2);
-        messageBody.writeUInt8(now.getHours(), offset + 3);
-        messageBody.writeUInt8(now.getMinutes(), offset + 4);
-        messageBody.writeUInt8(now.getSeconds(), offset + 5);
+        const now = new Date().toISOString();
+        const nowTimestamp = this.isoTimeToJTT2019(now);
+        messageBody.writeUInt32BE(nowTimestamp, offset);
       }
-      offset += 6;
+      offset += 4;
 
-      // End time (BCD format: YY-MM-DD-HH-MM-SS)
+      // End time (JTT2019 format: 4 bytes DWORD)
       if (endTime) {
-        const endDate = new Date(endTime);
-        messageBody.writeUInt8(endDate.getFullYear() % 100, offset);
-        messageBody.writeUInt8(endDate.getMonth() + 1, offset + 1);
-        messageBody.writeUInt8(endDate.getDate(), offset + 2);
-        messageBody.writeUInt8(endDate.getHours(), offset + 3);
-        messageBody.writeUInt8(endDate.getMinutes(), offset + 4);
-        messageBody.writeUInt8(endDate.getSeconds(), offset + 5);
+        const endTimestamp = this.isoTimeToJTT2019(endTime);
+        messageBody.writeUInt32BE(endTimestamp, offset);
       } else {
         // Use current time + 1 hour if not specified
         const now = new Date();
         now.setHours(now.getHours() + 1);
-        messageBody.writeUInt8(now.getFullYear() % 100, offset);
-        messageBody.writeUInt8(now.getMonth() + 1, offset + 1);
-        messageBody.writeUInt8(now.getDate(), offset + 2);
-        messageBody.writeUInt8(now.getHours(), offset + 3);
-        messageBody.writeUInt8(now.getMinutes(), offset + 4);
-        messageBody.writeUInt8(now.getSeconds(), offset + 5);
+        const endTimestamp = this.isoTimeToJTT2019(now.toISOString());
+        messageBody.writeUInt32BE(endTimestamp, offset);
       }
-      offset += 6;
+      offset += 4;
 
       // Alarm sign (64 bits, not used, fill with 0)
       messageBody.writeBigUInt64LE(0n, offset);
@@ -3198,8 +3414,7 @@ class JT808Server {
         this.sendGeneralResponse(connection.socket, message, 0x0000);
 
         logger.info(
-          `✅ Resource Query acknowledged for terminal ${
-            connection.terminalId || connectionId
+          `✅ Resource Query acknowledged for terminal ${connection.terminalId || connectionId
           }`
         );
       }
@@ -3247,8 +3462,7 @@ class JT808Server {
         connection.resourceList = responseData.resourceList;
 
         logger.info(
-          `✅ Resource Query Response processed for terminal ${
-            connection.terminalId || connectionId
+          `✅ Resource Query Response processed for terminal ${connection.terminalId || connectionId
           }`
         );
       }
@@ -3297,8 +3511,7 @@ class JT808Server {
         this.sendGeneralResponse(connection.socket, message, 0x0000);
 
         logger.info(
-          `✅ File Upload Instructions acknowledged for terminal ${
-            connection.terminalId || connectionId
+          `✅ File Upload Instructions acknowledged for terminal ${connection.terminalId || connectionId
           }`
         );
       }
@@ -3335,8 +3548,7 @@ class JT808Server {
         }
 
         logger.info(
-          `✅ File Upload Completion processed for terminal ${
-            connection.terminalId || connectionId
+          `✅ File Upload Completion processed for terminal ${connection.terminalId || connectionId
           }`
         );
       }
@@ -3368,8 +3580,7 @@ class JT808Server {
         this.sendGeneralResponse(connection.socket, message, 0x0000);
 
         logger.info(
-          `✅ File Upload Control acknowledged for terminal ${
-            connection.terminalId || connectionId
+          `✅ File Upload Control acknowledged for terminal ${connection.terminalId || connectionId
           }`
         );
       }
@@ -3406,8 +3617,7 @@ class JT808Server {
 
         logger.info(`🎮 Terminal Control Details:`);
         logger.info(
-          `  Command: 0x${controlData.command.toString(16)} - ${
-            commandMap[controlData.command] || "Unknown"
+          `  Command: 0x${controlData.command.toString(16)} - ${commandMap[controlData.command] || "Unknown"
           }`
         );
 
@@ -3415,8 +3625,7 @@ class JT808Server {
         this.sendGeneralResponse(connection.socket, message, 0x0000);
 
         logger.info(
-          `✅ Terminal Control acknowledged for terminal ${
-            connection.terminalId || connectionId
+          `✅ Terminal Control acknowledged for terminal ${connection.terminalId || connectionId
           }`
         );
       }
@@ -3466,13 +3675,15 @@ class JT808Server {
       const memoryType = body.readUInt8(offset);
       offset += 1;
 
-      // Start time (BCD[6])
-      const startTime = this.parseBCDTime(body.slice(offset, offset + 6));
-      offset += 6;
+      // Start time (JTT2019 - 4 bytes)
+      const startTimeTimestamp = body.readUInt32BE(offset);
+      const startTime = this.parseJTT2019Time(startTimeTimestamp);
+      offset += 4;
 
-      // End time (BCD[6])
-      const endTime = this.parseBCDTime(body.slice(offset, offset + 6));
-      offset += 6;
+      // End time (JTT2019 - 4 bytes)
+      const endTimeTimestamp = body.readUInt32BE(offset);
+      const endTime = this.parseJTT2019Time(endTimeTimestamp);
+      offset += 4;
 
       // Alarm sign (64 bits = 8 bytes) - ULV protocol specification
       const alarmSign = body.slice(offset, offset + 8);
@@ -3521,21 +3732,21 @@ class JT808Server {
 
       // Parse each resource item according to ULV protocol Table 3.14.3
       while (offset < body.length && resourceList.length < totalResources) {
-        if (offset + 28 > body.length) break; // Minimum size for resource item (28 bytes)
+        if (offset + 24 > body.length) break; // Minimum size for resource item (24 bytes with JTT2019)
 
         const resource = {
           channelNumber: body.readUInt8(offset), // Start byte 0: Channel number (BYTE)
-          startTime: this.parseBCDTime(body.slice(offset + 1, offset + 7)), // Start byte 1: Start time (BCD[6])
-          endTime: this.parseBCDTime(body.slice(offset + 7, offset + 13)), // Start byte 7: End time (BCD[6])
-          alarmSign: body.slice(offset + 13, offset + 21).toString("hex"), // Start byte 13: Alarm sign (64 bits)
-          resourceType: body.readUInt8(offset + 21), // Start byte 21: Resource type (BYTE)
-          streamType: body.readUInt8(offset + 22), // Start byte 22: Stream type (BYTE)
-          memoryType: body.readUInt8(offset + 23), // Start byte 23: Memory type (BYTE)
-          fileSize: body.readUInt32BE(offset + 24), // Start byte 24: File size (DWORD)
+          startTime: this.parseJTT2019Time(body.readUInt32BE(offset + 1)), // Start byte 1: Start time (JTT2019 - 4 bytes)
+          endTime: this.parseJTT2019Time(body.readUInt32BE(offset + 5)), // Start byte 5: End time (JTT2019 - 4 bytes)
+          alarmSign: body.slice(offset + 9, offset + 17).toString("hex"), // Start byte 9: Alarm sign (64 bits)
+          resourceType: body.readUInt8(offset + 17), // Start byte 17: Resource type (BYTE)
+          streamType: body.readUInt8(offset + 18), // Start byte 18: Stream type (BYTE)
+          memoryType: body.readUInt8(offset + 19), // Start byte 19: Memory type (BYTE)
+          fileSize: body.readUInt32BE(offset + 20), // Start byte 20: File size (DWORD)
         };
 
         resourceList.push(resource);
-        offset += 28; // Size of each resource item according to ULV spec
+        offset += 24; // Size of each resource item with JTT2019 format
       }
 
       return {
@@ -3611,13 +3822,15 @@ class JT808Server {
       const channelNumber = body.readUInt8(offset);
       offset += 1;
 
-      // Start time (BCD[6])
-      const startTime = this.parseBCDTime(body.slice(offset, offset + 6));
-      offset += 6;
+      // Start time (JTT2019 - 4 bytes)
+      const startTimeTimestamp = body.readUInt32BE(offset);
+      const startTime = this.parseJTT2019Time(startTimeTimestamp);
+      offset += 4;
 
-      // End time (BCD[6])
-      const endTime = this.parseBCDTime(body.slice(offset, offset + 6));
-      offset += 6;
+      // End time (JTT2019 - 4 bytes)
+      const endTimeTimestamp = body.readUInt32BE(offset);
+      const endTime = this.parseJTT2019Time(endTimeTimestamp);
+      offset += 4;
 
       // Alarm sign (64 bits, not used temporarily)
       const alarmSign = body.slice(offset, offset + 8);
@@ -3748,8 +3961,8 @@ class JT808Server {
       return `${year}-${month.toString().padStart(2, "0")}-${day
         .toString()
         .padStart(2, "0")} ${hour.toString().padStart(2, "0")}:${minute
-        .toString()
-        .padStart(2, "0")}:${second.toString().padStart(2, "0")}`;
+          .toString()
+          .padStart(2, "0")}:${second.toString().padStart(2, "0")}`;
     } catch (error) {
       logger.error(`Error parsing BCD time: ${error.message}`);
       return "2000-00-00 00:00:00";
@@ -3830,11 +4043,11 @@ class JT808Server {
         return false;
       }
 
-      // Convert ISO time strings to BCD format
-      const startBCD = this.isoTimeToBCD(startTime);
-      const endBCD = this.isoTimeToBCD(endTime);
+      // Convert ISO time strings to JTT2019 format (4 bytes each)
+      const startJTT2019 = this.isoTimeToJTT2019Buffer(startTime);
+      const endJTT2019 = this.isoTimeToJTT2019Buffer(endTime);
 
-      // Build message body according to Table 3.21.1
+      // Build message body according to Table 3.21.1 (updated for JTT2019)
       const body = Buffer.concat([
         Buffer.from([ftpServer.length]), // Server address length
         Buffer.from(ftpServer, "utf8"), // Server address
@@ -3846,16 +4059,16 @@ class JT808Server {
         Buffer.from([uploadPath.length]), // File upload path length
         Buffer.from(uploadPath, "utf8"), // File upload path
         Buffer.from([channelNumber]), // Logical channel number
-        startBCD, // Start time (BCD[6])
-        endBCD, // End time (BCD[6])
+        startJTT2019, // Start time (JTT2019 - 4 bytes)
+        endJTT2019, // End time (JTT2019 - 4 bytes)
         Buffer.alloc(8, 0), // Alarm sign (64 bits, not used)
         Buffer.from([resourceType]), // Audio and video resource type
         Buffer.from([streamType]), // Stream type
         Buffer.from([storageLocation]), // Storage location
         Buffer.from([
           (wifiEnabled ? 0x01 : 0) |
-            (lanEnabled ? 0x02 : 0) |
-            (mobileEnabled ? 0x04 : 0),
+          (lanEnabled ? 0x02 : 0) |
+          (mobileEnabled ? 0x04 : 0),
         ]), // Task execution conditions
       ]);
 
@@ -3909,8 +4122,7 @@ class JT808Server {
       if (success) {
         const actionMap = { 0: "Pause", 1: "Continue", 2: "Cancel" };
         logger.info(
-          `📁 File Upload Control sent to terminal ${terminalId}: ${
-            actionMap[uploadControl] || "Unknown"
+          `📁 File Upload Control sent to terminal ${terminalId}: ${actionMap[uploadControl] || "Unknown"
           }`
         );
         logger.info(`  Response Serial: ${responseSerial}`);
@@ -3949,13 +4161,11 @@ class JT808Server {
           0x74: "Restart Device",
         };
         logger.info(
-          `🎮 Terminal Control sent to terminal ${terminalId}: ${
-            commandMap[command] || "Unknown"
+          `🎮 Terminal Control sent to terminal ${terminalId}: ${commandMap[command] || "Unknown"
           }`
         );
         logger.info(
-          `  Command: 0x${command.toString(16)} - ${
-            commandMap[command] || "Unknown"
+          `  Command: 0x${command.toString(16)} - ${commandMap[command] || "Unknown"
           }`
         );
       }
@@ -3963,6 +4173,34 @@ class JT808Server {
       return success;
     } catch (error) {
       logger.error(`Error sending terminal control: ${error.message}`);
+      return false;
+    }
+  }
+
+  /**
+   * Restart Terminal Device (convenience function for 0x8105 with command 0x74)
+   * According to ULV Protocol Table 3.20
+   */
+  restartTerminal(terminalId) {
+    try {
+      logger.info(`🔄 Sending restart command to terminal ${terminalId}`);
+
+      // Send Terminal Control (0x8105) with restart command (0x74)
+      const success = this.sendTerminalControl(terminalId, 0x74);
+
+      if (success) {
+        logger.info(`✅ Restart command (0x74) sent successfully to terminal ${terminalId}`);
+        logger.info(`📋 Expected device behavior:`);
+        logger.info(`   1. Device will acknowledge with general response (0x0001)`);
+        logger.info(`   2. Device will send restart acknowledgment in transparent data (0x0900)`);
+        logger.info(`   3. Device will physically restart and reconnect`);
+      } else {
+        logger.error(`❌ Failed to send restart command to terminal ${terminalId}`);
+      }
+
+      return success;
+    } catch (error) {
+      logger.error(`Error restarting terminal ${terminalId}: ${error.message}`);
       return false;
     }
   }
@@ -3981,35 +4219,35 @@ class JT808Server {
 
   /**
    * Helper method to send message to terminal
+   * Fixed to follow ULV Protocol V2.0.0-2019 Table 2.2.2 (17-byte header)
    */
   sendMessageToTerminal(connection, messageId, body) {
     try {
       // Debug logging to see what we're receiving
       logger.debug(`SEND MESSAGE DEBUG - Input Parameters:`);
       logger.debug(
-        `   Connection: ${typeof connection}, Terminal ID: ${
-          connection?.terminalId
+        `   Connection: ${typeof connection}, Terminal ID: ${connection?.terminalId
         }`
       );
       logger.debug(`   Message ID: 0x${messageId.toString(16).toUpperCase()}`);
       logger.debug(
-        `   Body: ${typeof body}, Length: ${
-          body?.length
+        `   Body: ${typeof body}, Length: ${body?.length
         }, Content: ${body?.toString("hex")}`
       );
 
-      // Build message header according to JT808-2019 standard
+      // Build message header according to ULV Protocol V2.0.0-2019 Table 2.2.2 (17 bytes)
       const messageIdBuffer = Buffer.alloc(2);
       messageIdBuffer.writeUInt16BE(messageId, 0);
 
-      // Properties: Version ID (bit 14) = 1, body length
+      // Properties: Version ID (bit 14) = 1, body length (bits 0-9)
       const properties = Buffer.alloc(2);
-      properties.writeUInt16BE(0x4000 | body.length, 0);
+      properties.writeUInt16BE(0x4000 | (body.length & 0x3FF), 0);
 
+      // Protocol version (1 byte) - ULV Protocol uses version 1
       const protocolVersion = Buffer.alloc(1);
       protocolVersion.writeUInt8(1, 0);
 
-      // Terminal phone number in BCD format (6 bytes) - CRITICAL FIX
+      // Terminal phone number in BCD format (6 bytes) - REVERTED TO WORKING FORMAT
       const bcdPhone = Buffer.alloc(6);
       if (connection.terminalId) {
         // Convert terminal ID to BCD format
@@ -4024,7 +4262,7 @@ class JT808Server {
       const messageSerialNumber = Buffer.alloc(2);
       messageSerialNumber.writeUInt16BE(this.generateSerialNumber(), 0);
 
-      // Build header (15 bytes total for JT808-2019)
+      // Build header (15 bytes total for JT808-2019) - REVERTED TO WORKING FORMAT
       const header = Buffer.concat([
         messageIdBuffer, // 2 bytes
         properties, // 2 bytes
@@ -4072,8 +4310,7 @@ class JT808Server {
       if (writeResult) {
         logger.debug(`Message sent successfully`);
         logger.debug(
-          `Sent message to terminal ${
-            connection.terminalId || "unknown"
+          `Sent message to terminal ${connection.terminalId || "unknown"
           }: 0x${messageId.toString(16)}, ${body.length} bytes`
         );
         logger.debug(`Raw message: ${escapedMessage.toString("hex")}`);
@@ -4092,31 +4329,52 @@ class JT808Server {
   }
 
   /**
-   * Convert ISO time string to BCD format (YY-MM-DD-HH-MM-SS)
+   * Convert ISO time string to JTT2019 format (DWORD - seconds since 2000-01-01 00:00:00 UTC)
+   * This is now the standard time format for ALL ULV protocol messages
    */
-  isoTimeToBCD(isoTimeString) {
+  isoTimeToJTT2019(isoTimeString) {
     try {
       const date = new Date(isoTimeString);
-      const year = date.getFullYear() - 2000; // Convert to YY format
-      const month = date.getMonth() + 1;
-      const day = date.getDate();
-      const hour = date.getHours();
-      const minute = date.getMinutes();
-      const second = date.getSeconds();
+      const jtt2019Epoch = new Date("2000-01-01T00:00:00Z").getTime();
+      const timestamp = Math.floor((date.getTime() - jtt2019Epoch) / 1000);
 
-      const bcdBuffer = Buffer.alloc(6);
-      bcdBuffer[0] = (Math.floor(year / 10) << 4) | year % 10;
-      bcdBuffer[1] = (Math.floor(month / 10) << 4) | month % 10;
-      bcdBuffer[2] = (Math.floor(day / 10) << 4) | day % 10;
-      bcdBuffer[3] = (Math.floor(hour / 10) << 4) | hour % 10;
-      bcdBuffer[4] = (Math.floor(minute / 10) << 4) | minute % 10;
-      bcdBuffer[5] = (Math.floor(second / 10) << 4) | second % 10;
+      if (timestamp < 0) {
+        logger.warn(`Date ${isoTimeString} is before JTT2019 epoch (2000-01-01), using 0`);
+        return 0;
+      }
 
-      return bcdBuffer;
+      return timestamp;
     } catch (error) {
-      logger.error(`Error converting ISO time to BCD: ${error.message}`);
-      return Buffer.alloc(6, 0);
+      logger.error(`Error converting ISO time to JTT2019: ${error.message}`);
+      return 0;
     }
+  }
+
+  /**
+   * Convert JTT2019 timestamp to Buffer (4 bytes DWORD)
+   */
+  jtt2019ToBuffer(timestamp) {
+    const buffer = Buffer.alloc(4);
+    buffer.writeUInt32BE(timestamp, 0);
+    return buffer;
+  }
+
+  /**
+   * Convert ISO time string to JTT2019 Buffer (4 bytes)
+   */
+  isoTimeToJTT2019Buffer(isoTimeString) {
+    const timestamp = this.isoTimeToJTT2019(isoTimeString);
+    return this.jtt2019ToBuffer(timestamp);
+  }
+
+  /**
+   * @deprecated Use isoTimeToJTT2019Buffer instead
+   * Convert ISO time string to BCD format (YY-MM-DD-HH-MM-SS)
+   * Kept for backward compatibility, but now converts to JTT2019
+   */
+  isoTimeToBCD(isoTimeString) {
+    logger.warn('isoTimeToBCD is deprecated, using JTT2019 format instead');
+    return this.isoTimeToJTT2019Buffer(isoTimeString);
   }
 
   parseDeviceDataReport(messageBody) {
@@ -4209,7 +4467,8 @@ class JT808Server {
       const height = data.readUInt16BE(17);
       const speed = data.readUInt16BE(19) / 10; // Convert from 0.1 km/h
       const direction = data.readUInt16BE(21);
-      const time = this.parseBCDTime(data.slice(23, 29));
+      const timeTimestamp = data.readUInt32BE(23);
+      const time = this.parseJTT2019Time(timeTimestamp);
       const mileage = data.readUInt32BE(29) / 10; // Convert from 0.1 km
       const fuelSensorStatus = data.readUInt8(33);
       const deviceDifferences = data.readUInt8(34);
@@ -4369,7 +4628,8 @@ class JT808Server {
       const height = data.readUInt16BE(19);
       const speed = data.readUInt16BE(21) / 10; // Convert from 0.1 km/h
       const direction = data.readUInt16BE(23);
-      const time = this.parseBCDTime(data.slice(25, 31));
+      const timeTimestamp = data.readUInt32BE(25);
+      const time = this.parseJTT2019Time(timeTimestamp);
 
       // Parse additional fields if present
       let mileage = null;
@@ -4428,8 +4688,7 @@ class JT808Server {
             );
           } else {
             logger.info(
-              `    ${index + 1}. ID: 0x${item.id.toString(16)}, Length: ${
-                item.length
+              `    ${index + 1}. ID: 0x${item.id.toString(16)}, Length: ${item.length
               }`
             );
           }
@@ -4600,8 +4859,8 @@ class JT808Server {
     return `${year}-${month.toString().padStart(2, "0")}-${day
       .toString()
       .padStart(2, "0")} ${hour.toString().padStart(2, "0")}:${minute
-      .toString()
-      .padStart(2, "0")}:${second.toString().padStart(2, "0")}`;
+        .toString()
+        .padStart(2, "0")}:${second.toString().padStart(2, "0")}`;
   }
 
   // Parse additional information items for device data reports (ULV protocol Table 3.10.11)
@@ -4876,11 +5135,10 @@ class JT808Server {
           commandWord === 0x75
             ? "photo"
             : commandWord === 0x76
-            ? "video"
-            : "audio";
+              ? "video"
+              : "audio";
         logger.info(
-          `📸 Multimedia capture command (${actionType}) acknowledged by terminal ${
-            connection.terminalId || connectionId
+          `📸 Multimedia capture command (${actionType}) acknowledged by terminal ${connection.terminalId || connectionId
           }`
         );
         logger.info(
@@ -4889,8 +5147,7 @@ class JT808Server {
       }
 
       logger.info(
-        `✅ Terminal Control Response processed for terminal ${
-          connection.terminalId || connectionId
+        `✅ Terminal Control Response processed for terminal ${connection.terminalId || connectionId
         }`
       );
     } catch (error) {
@@ -4971,8 +5228,12 @@ class JT808Server {
   handlePhotoCaptureCommand(connection, messageData) {
     try {
       const terminalId = connection.terminalId;
-      logger.info(`📸 Photo Capture Command received from terminal ${terminalId}`);
-      
+      logger.info(
+        `📸 Photo Capture Command received from terminal ${terminalId}`
+      );
+      logger.info(`📊 Message data length: ${messageData.length} bytes`);
+      logger.info(`🔍 Message data (hex): ${messageData.toString("hex")}`);
+
       // Parse photo capture command parameters
       if (messageData.length >= 8) {
         const channelId = messageData[0];
@@ -4983,29 +5244,43 @@ class JT808Server {
         const brightness = messageData[5];
         const contrast = messageData[6];
         const saturation = messageData[7];
-        
+
         logger.info(`📸 Photo Capture Parameters:`);
         logger.info(`  Channel ID: ${channelId}`);
-        logger.info(`  Event Code: ${eventCode} (${eventCode === 1 ? 'Platform Instruction' : 'Other'})`);
-        logger.info(`  Format: ${format} (${format === 0 ? 'JPEG' : 'Other'})`);
-        logger.info(`  Resolution: ${resolution} (${resolution === 1 ? '320x240' : 'Other'})`);
+        logger.info(
+          `  Event Code: ${eventCode} (${eventCode === 1 ? "Platform Instruction" : "Other"
+          })`
+        );
+        logger.info(`  Format: ${format} (${format === 0 ? "JPEG" : "Other"})`);
+        logger.info(
+          `  Resolution: ${resolution} (${resolution === 1 ? "320x240" : "Other"
+          })`
+        );
         logger.info(`  Quality: ${quality}%`);
         logger.info(`  Brightness: ${brightness}`);
         logger.info(`  Contrast: ${contrast}`);
         logger.info(`  Saturation: ${saturation}`);
-        
+
         // Create a mock message object for the response
         const mockMessage = {
           messageSerialNumber: this.generateSerialNumber(),
-          messageId: 0x8801
+          messageId: 0x8801,
         };
-        
+
         // Send acknowledgment (0x8001)
         this.sendGeneralResponse(connection.socket, mockMessage, 0x00);
-        
-        logger.info(`✅ Photo capture command acknowledged for terminal ${terminalId}`);
+
+        logger.info(
+          `✅ Photo capture command acknowledged for terminal ${terminalId}`
+        );
       } else {
-        logger.warn(`⚠️ Invalid photo capture command format from terminal ${terminalId}`);
+        logger.warn(
+          `⚠️ Invalid photo capture command format from terminal ${terminalId}`
+        );
+        logger.warn(
+          `📊 Expected: 8+ bytes, Received: ${messageData.length} bytes`
+        );
+        logger.warn(`🔍 Received data: ${messageData.toString("hex")}`);
       }
     } catch (error) {
       logger.error(`Error handling photo capture command: ${error.message}`);
@@ -5019,34 +5294,52 @@ class JT808Server {
   handleDriverIdentityReport(connection, messageData) {
     try {
       const terminalId = connection.terminalId;
-      logger.info(`🆔 Driver Identity Report received from terminal ${terminalId}`);
-      
+      logger.info(
+        `🆔 Driver Identity Report received from terminal ${terminalId}`
+      );
+
       // Parse driver identity data according to ULV protocol
       if (messageData.length >= 4) {
         const driverIdLength = messageData[0];
-        const driverId = messageData.slice(1, 1 + driverIdLength).toString('utf8');
+        const driverId = messageData
+          .slice(1, 1 + driverIdLength)
+          .toString("utf8");
         const qualificationCode = messageData[1 + driverIdLength];
-        const issueDate = messageData.slice(2 + driverIdLength, 6 + driverIdLength);
-        const expiryDate = messageData.slice(6 + driverIdLength, 10 + driverIdLength);
-        
+        const issueDate = messageData.slice(
+          2 + driverIdLength,
+          6 + driverIdLength
+        );
+        const expiryDate = messageData.slice(
+          6 + driverIdLength,
+          10 + driverIdLength
+        );
+
         logger.info(`🆔 Driver Identity Information:`);
         logger.info(`  Driver ID: ${driverId}`);
-        logger.info(`  Qualification Code: 0x${qualificationCode.toString(16).padStart(2, '0')}`);
+        logger.info(
+          `  Qualification Code: 0x${qualificationCode
+            .toString(16)
+            .padStart(2, "0")}`
+        );
         logger.info(`  Issue Date: ${this.parseJTT2019Timestamp(issueDate)}`);
         logger.info(`  Expiry Date: ${this.parseJTT2019Timestamp(expiryDate)}`);
-        
+
         // Create a mock message object for the response
         const mockMessage = {
           messageSerialNumber: this.generateSerialNumber(),
-          messageId: 0x702
+          messageId: 0x702,
         };
-        
+
         // Send acknowledgment (0x8001)
         this.sendGeneralResponse(connection.socket, mockMessage, 0x00);
-        
-        logger.info(`✅ Driver identity report acknowledged for terminal ${terminalId}`);
+
+        logger.info(
+          `✅ Driver identity report acknowledged for terminal ${terminalId}`
+        );
       } else {
-        logger.warn(`⚠️ Invalid driver identity report format from terminal ${terminalId}`);
+        logger.warn(
+          `⚠️ Invalid driver identity report format from terminal ${terminalId}`
+        );
       }
     } catch (error) {
       logger.error(`Error handling driver identity report: ${error.message}`);
@@ -5275,13 +5568,11 @@ class JT808Server {
               `🔍 ULV File Discovery found ${responseData.paramData.fileList.length} files on terminal ${connection.terminalId}`
             );
             logger.info(
-              `  Storage Location: ${
-                responseData.paramData.storageLocation || "Unknown"
+              `  Storage Location: ${responseData.paramData.storageLocation || "Unknown"
               }`
             );
             logger.info(
-              `  Total Size: ${
-                responseData.paramData.totalSize || "Unknown"
+              `  Total Size: ${responseData.paramData.totalSize || "Unknown"
               } bytes`
             );
             logger.info(
@@ -5294,8 +5585,7 @@ class JT808Server {
             const sampleFiles = responseData.paramData.fileList.slice(0, 5);
             sampleFiles.forEach((file, index) => {
               logger.info(
-                `  File ${index + 1}: ${file.fileName} (${
-                  file.fileSize
+                `  File ${index + 1}: ${file.fileName} (${file.fileSize
                 } bytes, ${file.fileType})`
               );
             });
@@ -5363,21 +5653,18 @@ class JT808Server {
               `📄 ULV File Metadata for ${responseData.paramData.fileName} on terminal ${connection.terminalId}`
             );
             logger.info(
-              `  File Size: ${
-                responseData.paramData.fileSize || "Unknown"
+              `  File Size: ${responseData.paramData.fileSize || "Unknown"
               } bytes`
             );
             logger.info(
               `  File Type: ${responseData.paramData.fileType || "Unknown"}`
             );
             logger.info(
-              `  Creation Time: ${
-                responseData.paramData.creationTime || "Unknown"
+              `  Creation Time: ${responseData.paramData.creationTime || "Unknown"
               }`
             );
             logger.info(
-              `  Modification Time: ${
-                responseData.paramData.modificationTime || "Unknown"
+              `  Modification Time: ${responseData.paramData.modificationTime || "Unknown"
               }`
             );
             logger.info(
@@ -5449,13 +5736,11 @@ class JT808Server {
               `📁 ULV File Access for ${responseData.paramData.fileName} on terminal ${connection.terminalId}`
             );
             logger.info(
-              `  File Size: ${
-                responseData.paramData.fileSize || "Unknown"
+              `  File Size: ${responseData.paramData.fileSize || "Unknown"
               } bytes`
             );
             logger.info(
-              `  Data Length: ${
-                responseData.paramData.dataLength || "Unknown"
+              `  Data Length: ${responseData.paramData.dataLength || "Unknown"
               } bytes`
             );
             logger.info(
@@ -5756,24 +6041,24 @@ class JT808Server {
         return false;
       }
 
-      // Convert ISO time strings to BCD format
-      const startBCD = this.isoTimeToBCD(startTime);
-      const endBCD = this.isoTimeToBCD(endTime);
+      // Convert ISO time strings to JTT2019 format (4 bytes each)
+      const startJTT2019 = this.isoTimeToJTT2019Buffer(startTime);
+      const endJTT2019 = this.isoTimeToJTT2019Buffer(endTime);
 
-      // Build message body according to ULV protocol Table 3.14.1
+      // Build message body according to ULV protocol Table 3.14.1 (updated for JTT2019)
       const body = Buffer.concat([
         Buffer.alloc(2), // Response serial number (2 bytes)
         Buffer.from([1]), // Logical channel number (start from 1)
-        startBCD, // Start time (BCD[6])
-        endBCD, // End time (BCD[6])
+        startJTT2019, // Start time (JTT2019 - 4 bytes)
+        endJTT2019, // End time (JTT2019 - 4 bytes)
         Buffer.alloc(8), // Alarm sign (64 bits = 8 bytes) - will be filled below
         Buffer.from([resourceType]), // Audio and video resource type
         Buffer.from([streamType]), // Stream type
         Buffer.from([memoryType]), // Memory type
       ]);
 
-      // Write the 64-bit alarm sign
-      body.writeBigUInt64BE(alarmSign, 13); // Offset 13 for alarm sign
+      // Write the 64-bit alarm sign (offset adjusted for JTT2019: 2 + 1 + 4 + 4 = 11)
+      body.writeBigUInt64BE(alarmSign, 11); // Offset 11 for alarm sign
 
       // Set response serial number
       body.writeUInt16BE(this.generateSerialNumber(), 0);
@@ -6103,13 +6388,11 @@ class JT808Server {
 
         logger.info(`✅ Streaming session ${sessionId} stopped successfully`);
         logger.info(
-          `  Duration: ${Math.round(session.duration / 1000)}s, Total bytes: ${
-            session.totalBytes
+          `  Duration: ${Math.round(session.duration / 1000)}s, Total bytes: ${session.totalBytes
           }`
         );
         logger.info(
-          `  Forwarded: ${session.totalPacketsForwarded || 0} packets, ${
-            session.totalBytesForwarded || 0
+          `  Forwarded: ${session.totalPacketsForwarded || 0} packets, ${session.totalBytesForwarded || 0
           } bytes to SRS`
         );
 
@@ -6508,8 +6791,7 @@ class JT808Server {
   handleGeneralResponse(message, connection, connectionId) {
     try {
       logger.info(
-        `📨 General response received from terminal ${
-          connection.terminalId || "unknown"
+        `📨 General response received from terminal ${connection.terminalId || "unknown"
         }`
       );
 
@@ -6553,8 +6835,7 @@ class JT808Server {
       const response = this.createGeneralResponse(message, 0x00);
       connection.socket.write(response);
       logger.debug(
-        `General response acknowledged for terminal ${
-          connection.terminalId || "unknown"
+        `General response acknowledged for terminal ${connection.terminalId || "unknown"
         }`
       );
     } catch (error) {
@@ -6569,8 +6850,7 @@ class JT808Server {
   handleAlternativeGeneralResponse(message, connection, connectionId) {
     try {
       logger.info(
-        `📨 Alternative general response received from terminal ${
-          connection.terminalId || "unknown"
+        `📨 Alternative general response received from terminal ${connection.terminalId || "unknown"
         }`
       );
 
@@ -6643,8 +6923,7 @@ class JT808Server {
       const response = this.createGeneralResponse(message, 0x00);
       connection.socket.write(response);
       logger.debug(
-        `Alternative general response acknowledged for terminal ${
-          connection.terminalId || "unknown"
+        `Alternative general response acknowledged for terminal ${connection.terminalId || "unknown"
         }`
       );
     } catch (error) {
@@ -6952,8 +7231,7 @@ class JT808Server {
         if (typeof value === "string") {
           if (offset + 1 + value.length > body.length) {
             throw new Error(
-              `String parameter overflow: need ${
-                1 + value.length
+              `String parameter overflow: need ${1 + value.length
               } bytes at offset ${offset}`
             );
           }
@@ -6990,15 +7268,14 @@ class JT808Server {
         }
 
         logger.debug(
-          `📝 Parameter ${paramId} = ${value} written at offset ${
-            offset -
-            (typeof value === "string"
-              ? value.length + 1
-              : typeof value === "number" && value <= 0xff
+          `📝 Parameter ${paramId} = ${value} written at offset ${offset -
+          (typeof value === "string"
+            ? value.length + 1
+            : typeof value === "number" && value <= 0xff
               ? 2
               : typeof value === "number" && value <= 0xffff
-              ? 3
-              : 5)
+                ? 3
+                : 5)
           }`
         );
       }
@@ -7768,6 +8045,589 @@ class JT808Server {
       logger.error(`Error parsing embedded commands: ${error.message}`);
       return [];
     }
+  }
+
+  /**
+   * Parse GPS Transparent Data (0xF0) according to ULV Protocol Table 3.10.3
+   * Uses JTT2019 time format instead of BCD[6] as specified in ULV protocol
+   */
+  parseGPSTransparentData(data) {
+    try {
+      if (data.length < 27) {
+        throw new Error(`GPS transparent data too short: ${data.length} bytes, expected at least 27`);
+      }
+
+      let offset = 0;
+
+      // Parse GPS data according to Table 3.10.3 structure
+      const alarmFlag = data.readUInt32BE(offset);
+      offset += 4; // DWORD - Alarm flags
+
+      const status = data.readUInt32BE(offset);
+      offset += 4; // DWORD - Status flags
+
+      const latitude = data.readInt32BE(offset) / 1000000;
+      offset += 4; // DWORD - Latitude * 10^6
+
+      const longitude = data.readInt32BE(offset) / 1000000;
+      offset += 4; // DWORD - Longitude * 10^6
+
+      const altitude = data.readUInt16BE(offset);
+      offset += 2; // WORD - Altitude in meters
+
+      const speed = data.readUInt16BE(offset) / 10;
+      offset += 2; // WORD - Speed * 0.1 km/h
+
+      const direction = data.readUInt16BE(offset);
+      offset += 2; // WORD - Direction 0-359°
+
+      // Parse time using JTT2019 format (4 bytes DWORD) instead of ULV Protocol BCD[6]
+      const timeTimestamp = data.readUInt32BE(offset);
+      offset += 4; // DWORD - JTT2019 timestamp
+
+      const time = this.parseJTT2019Time(timeTimestamp);
+
+      return {
+        type: "GPS Transparent Data",
+        alarmFlag,
+        status,
+        latitude,
+        longitude,
+        altitude,
+        speed,
+        direction,
+        time,
+        timestamp: timeTimestamp
+      };
+    } catch (error) {
+      logger.error(`Error parsing GPS transparent data: ${error.message}`);
+      return {
+        type: "GPS Transparent Data",
+        error: error.message,
+        rawData: data.toString('hex')
+      };
+    }
+  }
+
+  /**
+   * Parse GPS/OBD Data (0xF1) according to ULV Protocol Tables 3.10.5/3.10.6
+   * Uses JTT2019 time format instead of BCD[6] as specified in ULV protocol
+   */
+  parseGPSOBDData(data) {
+    try {
+      if (data.length < 27) {
+        throw new Error(`GPS/OBD data too short: ${data.length} bytes, expected at least 27`);
+      }
+
+      let offset = 0;
+
+      // Parse GPS portion (same as GPS transparent data)
+      const gpsData = this.parseGPSTransparentData(data.slice(0, 27));
+      offset += 27;
+
+      // Parse OBD data if present
+      let obdData = null;
+      if (data.length > offset) {
+        const obdBytes = data.slice(offset);
+        obdData = {
+          rawData: obdBytes.toString('hex'),
+          length: obdBytes.length
+        };
+
+        // Parse specific OBD fields if enough data
+        if (obdBytes.length >= 4) {
+          obdData.engineRPM = obdBytes.readUInt16BE(0);
+          obdData.vehicleSpeed = obdBytes.readUInt16BE(2);
+        }
+      }
+
+      return {
+        type: "GPS/OBD Data",
+        gps: gpsData,
+        obd: obdData
+      };
+    } catch (error) {
+      logger.error(`Error parsing GPS/OBD data: ${error.message}`);
+      return {
+        type: "GPS/OBD Data",
+        error: error.message,
+        rawData: data.toString('hex')
+      };
+    }
+  }
+
+  /**
+   * Parse WiFi Information (0xA1) according to ULV Protocol Table 3.10.7
+   */
+  parseWiFiData(data) {
+    try {
+      if (data.length < 3) {
+        throw new Error(`WiFi data too short: ${data.length} bytes, expected at least 3`);
+      }
+
+      let offset = 0;
+
+      const networkType = data.readUInt8(offset);
+      offset += 1;
+
+      const networkNameLength = data.readUInt8(offset);
+      offset += 1;
+
+      if (offset + networkNameLength > data.length) {
+        throw new Error(`WiFi data incomplete: expected ${networkNameLength} bytes for network name`);
+      }
+
+      const networkName = data.slice(offset, offset + networkNameLength).toString('utf8');
+      offset += networkNameLength;
+
+      // Parse additional fields if present
+      let manufacturerType = null;
+      let audioFormat = null;
+      let diskType = null;
+
+      if (offset < data.length) {
+        manufacturerType = data.readUInt8(offset);
+        offset += 1;
+      }
+
+      if (offset < data.length) {
+        audioFormat = data.readUInt8(offset);
+        offset += 1;
+      }
+
+      if (offset < data.length) {
+        diskType = data.readUInt8(offset);
+        offset += 1;
+      }
+
+      return {
+        type: "WiFi Information",
+        networkType,
+        networkName,
+        manufacturerType,
+        audioFormat,
+        diskType
+      };
+    } catch (error) {
+      logger.error(`Error parsing WiFi data: ${error.message}`);
+      return {
+        type: "WiFi Information",
+        error: error.message,
+        rawData: data.toString('hex')
+      };
+    }
+  }
+
+  /**
+   * Parse User-Defined Data (0xF0-0xFF range)
+   */
+  parseUserDefinedData(data) {
+    try {
+      return {
+        type: "User-Defined Data",
+        length: data.length,
+        rawData: data.toString('hex'),
+        // Look for embedded GPS-like structure
+        hasGPSStructure: data.length >= 27,
+        // Look for time patterns (JTT2019 timestamps)
+        possibleTimestamps: this.extractPossibleTimestamps(data)
+      };
+    } catch (error) {
+      logger.error(`Error parsing user-defined data: ${error.message}`);
+      return {
+        type: "User-Defined Data",
+        error: error.message,
+        rawData: data.toString('hex')
+      };
+    }
+  }
+
+  /**
+   * Extract possible JTT2019 timestamps from data
+   */
+  extractPossibleTimestamps(data) {
+    const timestamps = [];
+
+    // Look for 4-byte sequences that could be JTT2019 timestamps
+    for (let i = 0; i <= data.length - 4; i += 4) {
+      const timestamp = data.readUInt32BE(i);
+
+      // JTT2019 timestamps should be reasonable (between 2000 and ~2050)
+      // That's roughly 0 to 1.5 billion seconds since 2000-01-01
+      if (timestamp > 0 && timestamp < 1500000000) {
+        try {
+          const isoTime = this.parseJTT2019Time(timestamp);
+          timestamps.push({
+            offset: i,
+            timestamp,
+            isoTime
+          });
+        } catch (error) {
+          // Invalid timestamp, skip
+        }
+      }
+    }
+
+    return timestamps;
+  }
+
+  /**
+   * Handle Resource Query Response (0x1205) from device
+   * Parses resource list with JTT2019 time format
+   */
+  handleResourceQueryResponse(message, connection, connectionId) {
+    if (!connection.isAuthenticated) {
+      logger.warn(`Unauthorized resource query response from ${connectionId}`);
+      return;
+    }
+
+    logger.info(`Resource Query Response (0x1205) from terminal ${connection.terminalId}`);
+
+    try {
+      const resourceData = this.parseResourceQueryResponse(message.body);
+
+      logger.info(`Resource Query Response Details:`);
+      logger.info(`  Response Serial: ${resourceData.responseSerial}`);
+      logger.info(`  Resource Count: ${resourceData.resourceCount}`);
+
+      if (resourceData.resources && resourceData.resources.length > 0) {
+        logger.info(`  Resources Found:`);
+        resourceData.resources.forEach((resource, index) => {
+          logger.info(`    ${index + 1}. Channel: ${resource.channelId}`);
+          logger.info(`       Start Time: ${resource.startTime}`);
+          logger.info(`       End Time: ${resource.endTime}`);
+          logger.info(`       Alarm Sign: 0x${resource.alarmSign.toString('hex')}`);
+          logger.info(`       Resource Type: ${resource.resourceType}`);
+        });
+      } else {
+        logger.info(`  No resources found for the query`);
+      }
+
+      // Send acknowledgment
+      const response = this.createGeneralResponse(message, 0x00);
+      connection.socket.write(response);
+
+      logger.debug(`Resource query response acknowledged for terminal ${connection.terminalId}`);
+    } catch (error) {
+      logger.error(`Error handling resource query response: ${error.message}`);
+      // Send error response
+      const response = this.createGeneralResponse(message, 0x02); // Message error
+      connection.socket.write(response);
+    }
+  }
+
+  /**
+   * Parse Resource Query Response (0x1205) message body
+   * Uses JTT2019 time format instead of ULV Protocol BCD[6] format
+   */
+  parseResourceQueryResponse(body) {
+    try {
+      if (body.length < 3) {
+        throw new Error(`Resource query response too short: ${body.length} bytes, expected at least 3`);
+      }
+
+      let offset = 0;
+
+      // Response serial number (2 bytes)
+      const responseSerial = body.readUInt16BE(offset);
+      offset += 2;
+
+      // Resource count (1 byte)
+      const resourceCount = body.readUInt8(offset);
+      offset += 1;
+
+      logger.debug(`Parsing ${resourceCount} resources from response`);
+
+      const resources = [];
+
+      // Parse each resource item (20 bytes each with JTT2019 format)
+      // Structure: Channel ID (1) + Start Time (4) + End Time (4) + Alarm Sign (8) + Resource Type (1) + Reserved (2)
+      const resourceItemSize = 20; // Updated size for JTT2019 format
+
+      for (let i = 0; i < resourceCount; i++) {
+        if (offset + resourceItemSize > body.length) {
+          logger.warn(`Resource item ${i + 1} incomplete: need ${resourceItemSize} bytes, have ${body.length - offset}`);
+          break;
+        }
+
+        const channelId = body.readUInt8(offset);
+        offset += 1;
+
+        // Start time (JTT2019 format: 4 bytes DWORD) instead of ULV Protocol BCD[6]
+        const startTimeTimestamp = body.readUInt32BE(offset);
+        const startTime = this.parseJTT2019Time(startTimeTimestamp);
+        offset += 4;
+
+        // End time (JTT2019 format: 4 bytes DWORD) instead of ULV Protocol BCD[6]
+        const endTimeTimestamp = body.readUInt32BE(offset);
+        const endTime = this.parseJTT2019Time(endTimeTimestamp);
+        offset += 4;
+
+        // Alarm sign (8 bytes)
+        const alarmSign = body.slice(offset, offset + 8);
+        offset += 8;
+
+        // Resource type (1 byte)
+        const resourceType = body.readUInt8(offset);
+        offset += 1;
+
+        // Reserved (2 bytes)
+        const reserved = body.readUInt16BE(offset);
+        offset += 2;
+
+        resources.push({
+          channelId,
+          startTime,
+          endTime,
+          startTimeTimestamp,
+          endTimeTimestamp,
+          alarmSign,
+          resourceType,
+          reserved
+        });
+
+        logger.debug(`Resource ${i + 1}: Channel=${channelId}, Start=${startTime}, End=${endTime}, Type=${resourceType}`);
+      }
+
+      return {
+        responseSerial,
+        resourceCount,
+        resources
+      };
+    } catch (error) {
+      logger.error(`Error parsing resource query response: ${error.message}`);
+      throw error;
+    }
+  }
+
+  /**
+   * Handle File Upload Instructions (0x9206) from platform to device
+   * Uses JTT2019 time format for time parameters
+   */
+  handleFileUploadInstructions(message, connection, connectionId) {
+    logger.info(`File Upload Instructions (0x9206) received from ${connectionId}`);
+
+    try {
+      const instructionData = this.parseFileUploadInstructions(message.body);
+
+      logger.info(`File Upload Instructions Details:`);
+      logger.info(`  Server IP: ${instructionData.serverIP}`);
+      logger.info(`  Server Port: ${instructionData.serverPort}`);
+      logger.info(`  Username: ${instructionData.username}`);
+      logger.info(`  Password: ${instructionData.password}`);
+      logger.info(`  File Path: ${instructionData.filePath}`);
+      logger.info(`  Channel Number: ${instructionData.channelNumber}`);
+      logger.info(`  Start Time: ${instructionData.startTime}`);
+      logger.info(`  End Time: ${instructionData.endTime}`);
+      logger.info(`  Alarm Sign: 0x${instructionData.alarmSign.toString('hex')}`);
+      logger.info(`  Media Type: ${instructionData.mediaType}`);
+      logger.info(`  Stream Type: ${instructionData.streamType}`);
+      logger.info(`  Memory Type: ${instructionData.memoryType}`);
+      logger.info(`  Task Execution Condition: ${instructionData.taskExecutionCondition}`);
+
+      // Send acknowledgment
+      const response = this.createGeneralResponse(message, 0x00);
+      connection.socket.write(response);
+
+      logger.debug(`File upload instructions acknowledged for terminal ${connection.terminalId}`);
+    } catch (error) {
+      logger.error(`Error handling file upload instructions: ${error.message}`);
+      // Send error response
+      const response = this.createGeneralResponse(message, 0x02); // Message error
+      connection.socket.write(response);
+    }
+  }
+
+  /**
+   * Parse File Upload Instructions (0x9206) message body
+   * Uses JTT2019 time format instead of ULV Protocol BCD[6] format
+   */
+  parseFileUploadInstructions(body) {
+    try {
+      if (body.length < 50) {
+        throw new Error(`File upload instructions too short: ${body.length} bytes, expected at least 50`);
+      }
+
+      let offset = 0;
+
+      // Server IP address length (1 byte)
+      const serverIPLength = body.readUInt8(offset);
+      offset += 1;
+
+      // Server IP address (variable length)
+      const serverIP = body.slice(offset, offset + serverIPLength).toString('utf8');
+      offset += serverIPLength;
+
+      // Server port (2 bytes)
+      const serverPort = body.readUInt16BE(offset);
+      offset += 2;
+
+      // Username length (1 byte)
+      const usernameLength = body.readUInt8(offset);
+      offset += 1;
+
+      // Username (variable length)
+      const username = body.slice(offset, offset + usernameLength).toString('utf8');
+      offset += usernameLength;
+
+      // Password length (1 byte)
+      const passwordLength = body.readUInt8(offset);
+      offset += 1;
+
+      // Password (variable length)
+      const password = body.slice(offset, offset + passwordLength).toString('utf8');
+      offset += passwordLength;
+
+      // File path length (1 byte)
+      const filePathLength = body.readUInt8(offset);
+      offset += 1;
+
+      // File path (variable length)
+      const filePath = body.slice(offset, offset + filePathLength).toString('utf8');
+      offset += filePathLength;
+
+      // Channel number (1 byte)
+      const channelNumber = body.readUInt8(offset);
+      offset += 1;
+
+      // Start time (JTT2019 format: 4 bytes DWORD) instead of ULV Protocol BCD[6]
+      const startTimeTimestamp = body.readUInt32BE(offset);
+      const startTime = this.parseJTT2019Time(startTimeTimestamp);
+      offset += 4;
+
+      // End time (JTT2019 format: 4 bytes DWORD) instead of ULV Protocol BCD[6]
+      const endTimeTimestamp = body.readUInt32BE(offset);
+      const endTime = this.parseJTT2019Time(endTimeTimestamp);
+      offset += 4;
+
+      // Alarm sign (8 bytes)
+      const alarmSign = body.slice(offset, offset + 8);
+      offset += 8;
+
+      // Media type (1 byte)
+      const mediaType = body.readUInt8(offset);
+      offset += 1;
+
+      // Stream type (1 byte)
+      const streamType = body.readUInt8(offset);
+      offset += 1;
+
+      // Memory type (1 byte)
+      const memoryType = body.readUInt8(offset);
+      offset += 1;
+
+      // Task execution condition (1 byte)
+      const taskExecutionCondition = body.readUInt8(offset);
+      offset += 1;
+
+      return {
+        serverIP,
+        serverPort,
+        username,
+        password,
+        filePath,
+        channelNumber,
+        startTime,
+        endTime,
+        startTimeTimestamp,
+        endTimeTimestamp,
+        alarmSign,
+        mediaType,
+        streamType,
+        memoryType,
+        taskExecutionCondition
+      };
+    } catch (error) {
+      logger.error(`Error parsing file upload instructions: ${error.message}`);
+      throw error;
+    }
+  }
+
+  /**
+   * Handle File Upload Completion (0x1206) from device
+   */
+  handleFileUploadCompletion(message, connection, connectionId) {
+    if (!connection.isAuthenticated) {
+      logger.warn(`Unauthorized file upload completion from ${connectionId}`);
+      return;
+    }
+
+    logger.info(`File Upload Completion (0x1206) from terminal ${connection.terminalId}`);
+
+    try {
+      const completionData = this.parseFileUploadCompletion(message.body);
+
+      logger.info(`File Upload Completion Details:`);
+      logger.info(`  Response Serial: ${completionData.responseSerial}`);
+      logger.info(`  Result: ${completionData.result} (${this.getFileUploadResultName(completionData.result)})`);
+
+      if (completionData.supplementaryInfo) {
+        logger.info(`  Supplementary Info Length: ${completionData.supplementaryInfo.length}`);
+        logger.info(`  Supplementary Info: ${completionData.supplementaryInfo.toString('hex')}`);
+      }
+
+      // Send acknowledgment
+      const response = this.createGeneralResponse(message, 0x00);
+      connection.socket.write(response);
+
+      logger.debug(`File upload completion acknowledged for terminal ${connection.terminalId}`);
+    } catch (error) {
+      logger.error(`Error handling file upload completion: ${error.message}`);
+      // Send error response
+      const response = this.createGeneralResponse(message, 0x02); // Message error
+      connection.socket.write(response);
+    }
+  }
+
+  /**
+   * Parse File Upload Completion (0x1206) message body
+   */
+  parseFileUploadCompletion(body) {
+    try {
+      if (body.length < 3) {
+        throw new Error(`File upload completion too short: ${body.length} bytes, expected at least 3`);
+      }
+
+      let offset = 0;
+
+      // Response serial number (2 bytes)
+      const responseSerial = body.readUInt16BE(offset);
+      offset += 2;
+
+      // Result (1 byte)
+      const result = body.readUInt8(offset);
+      offset += 1;
+
+      // Supplementary information (remaining bytes, if any)
+      let supplementaryInfo = null;
+      if (offset < body.length) {
+        supplementaryInfo = body.slice(offset);
+      }
+
+      return {
+        responseSerial,
+        result,
+        supplementaryInfo
+      };
+    } catch (error) {
+      logger.error(`Error parsing file upload completion: ${error.message}`);
+      throw error;
+    }
+  }
+
+  /**
+   * Get file upload result name
+   */
+  getFileUploadResultName(result) {
+    const resultNames = {
+      0: "Success",
+      1: "Failed",
+      2: "File not found",
+      3: "Upload timeout",
+      4: "Server connection failed",
+      5: "Authentication failed"
+    };
+    return resultNames[result] || "Unknown";
   }
 }
 

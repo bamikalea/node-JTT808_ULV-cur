@@ -135,7 +135,7 @@ class BaseCommand {
   }
 
   /**
-   * Send message to terminal
+   * Send message to terminal using ULV Protocol V2.0.0-2019 format
    */
   sendMessage(connection, messageId, body) {
     try {
@@ -149,13 +149,13 @@ class BaseCommand {
         return false;
       }
 
-      // Use server's sendMessage method
-      const result = this.server.sendMessage(connection, messageId, body);
+      // Use server's sendMessageToTerminal method with ULV Protocol V2.0.0-2019 format
+      const result = this.server.sendMessageToTerminal(connection, messageId, body);
 
       if (result) {
         this.success(
           "MESSAGE_TRANSMISSION",
-          `Message 0x${messageId.toString(16).toUpperCase()} sent successfully`
+          `Message 0x${messageId.toString(16).toUpperCase()} sent successfully using ULV Protocol V2.0.0-2019`
         );
       } else {
         this.error("MESSAGE_TRANSMISSION", "Failed to send message");
